@@ -85,13 +85,13 @@ class ContactSensor:
     return seconds_since_last_update < _CONTACT_SENSOR_STATE_VALIDITY_SECONDS.value
 
   def __str__(self) -> str:
-    if self.is_contact == True:
-      state = '='
-    elif self.is_contact == False:
-      state = '-'
-    else:
+    if not self.is_valid():
       state = '?'
-    return str(self.position.value) + state
+    elif self._is_contact:
+      state = '='
+    else:
+      state = '-'
+    return str(self.position.value) + state + str(int(time.time()) - self._last_update_epoch_s)
 
 
 _SENSORS = {position: ContactSensor(position) for position in Position}
@@ -120,7 +120,7 @@ def _process_message(message: asyncio_mqtt.Message) -> None:
 
     sensor.is_contact = is_contact
     sensor.event.set()
-    sensor_status = ' '.join([str(sensor) for sensor in _SENSORS.values()])
+    sensor_status = ', '.join([str(sensor) for sensor in _SENSORS.values()])
     logging.info(f'Sensor status: {sensor_status}')
     return
 

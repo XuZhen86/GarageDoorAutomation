@@ -27,6 +27,8 @@ async def slightly_open_at_sunset(sunset_event: asyncio.Event, client: asyncio_m
 
 
 async def main(args: list[str]) -> None:
+  logging.get_absl_handler().use_absl_log_file()  # type: ignore
+
   async with create_mqtt_client() as client:
     await subscribe(client)
 

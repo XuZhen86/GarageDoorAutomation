@@ -10,7 +10,7 @@ services:
     mem_limit: 64M
     restart: unless-stopped
     volumes:
-      - prod-data:/app/data:ro
+      - prod-data:/app/data
 
 volumes:
   prod-data:

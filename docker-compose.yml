@@ -7,7 +7,7 @@ services:
       - --flagfile=data/flags.txt
     image: garage-door-automation
     init: true
-    mem_limit: 64M
+    mem_limit: 128M
     restart: unless-stopped
     volumes:
       - prod-data:/app/data

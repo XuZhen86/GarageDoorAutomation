@@ -1,0 +1,38 @@
+// For format details, see https://aka.ms/devcontainer.json. For config options, see the
+// README at: https://github.com/devcontainers/templates/tree/main/src/python
+{
+  // https://containers.dev/implementors/json_reference/#general-properties
+  "name": "GarageDoorAutomation",
+  "init": true,
+  "customizations": {
+    "vscode": {
+      "extensions": [
+        "ms-python.python"
+      ],
+      "settings": {
+        "python.formatting.provider": "yapf",
+        "python.formatting.yapfPath": "/usr/local/bin/yapf",
+        "python.formatting.yapfArgs": [
+          "--style",
+          "{based_on_style: pep8, COLUMN_LIMIT: 100, INDENT_WIDTH: 2}"
+        ],
+        "python.analysis.typeCheckingMode": "basic",
+        "editor.formatOnSave": true
+      }
+    }
+  },
+  "features": {
+    "ghcr.io/devcontainers-contrib/features/isort:1": {},
+    "ghcr.io/devcontainers-contrib/features/yapf:1": {}
+  },
+  // https://containers.dev/implementors/json_reference/#image-specific
+  "image": "python:3.11",
+  // https://containers.dev/implementors/json_reference/#lifecycle-scripts
+  "postCreateCommand": [
+    "pip3",
+    "install",
+    "--use-pep517",
+    "--editable",
+    "."
+  ]
+}

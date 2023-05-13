@@ -1,0 +1,16 @@
+version: '2.4'
+
+services:
+  prod:
+    command:
+      - garage-door-automation
+      - --flagfile=data/flags.txt
+    image: garage-door-automation
+    init: true
+    mem_limit: 64M
+    restart: unless-stopped
+    volumes:
+      - prod-data:/app/data:ro
+
+volumes:
+  prod-data:

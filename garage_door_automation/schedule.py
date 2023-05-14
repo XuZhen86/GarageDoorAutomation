@@ -108,6 +108,11 @@ async def set_event_at_sunrise(event: asyncio.Event) -> None:
     event.set()
     logging.info('Sunrise event was set.')
 
+    # suntime's calculation can be tricky, like the next sunrise/sunset is within 1 minute.
+    # Forcing a cooldown to avoid this issue.
+    logging.info('Cooling down for 30m before calculating the next sunrise.')
+    await asyncio.sleep(30 * 60)
+
 
 async def set_event_at_sunset(event: asyncio.Event) -> None:
   while True:
@@ -125,3 +130,8 @@ async def set_event_at_sunset(event: asyncio.Event) -> None:
     await asyncio.sleep(seconds_till_sunset)
     event.set()
     logging.info('Sunset event was set.')
+
+    # suntime's calculation can be tricky, like the next sunrise/sunset is within 1 minute.
+    # Forcing a cooldown to avoid this issue.
+    logging.info('Cooling down for 30m before calculating the next sunset.')
+    await asyncio.sleep(30 * 60)

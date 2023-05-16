@@ -61,6 +61,23 @@ _SUNSET_MINUTE = flags.DEFINE_integer(
     help='Manually override sunset minute instead of calculating it from the current location.',
 )
 
+_SUNRISE_OFFSET_MINUTES = flags.DEFINE_integer(
+    name='sunrise_offset_minutes',
+    default=0,
+    required=False,
+    lower_bound=-4 * 60,
+    upper_bound=4 * 60,
+    help='Advance or delay in minutes when the sunrise event is fired.',
+)
+_SUNSET_OFFSET_MINUTES = flags.DEFINE_integer(
+    name='sunset_offset_minutes',
+    default=0,
+    required=False,
+    lower_bound=-4 * 60,
+    upper_bound=4 * 60,
+    help='Advance or delay in minutes when the sunset event is fired.',
+)
+
 
 def _local_timezone():
   if _LOCAL_TIMEZONE_NAME.present:
@@ -95,13 +112,16 @@ async def set_event_at_sunrise(event: asyncio.Event) -> None:
   while True:
     now = datetime.now().astimezone(timezone.utc)
     sunrise_time = _sunrise_time(now)
-    time_till_sunrise = sunrise_time - now
+    sunrise_time_with_offset = sunrise_time + timedelta(minutes=_SUNRISE_OFFSET_MINUTES.value)
+    time_till_sunrise = sunrise_time_with_offset - now
     seconds_till_sunrise = time_till_sunrise.total_seconds()
 
     local_timezone = _local_timezone()
     logging.info(f'Local timezone is {local_timezone}.')
     logging.info(f'Time now is {now.astimezone(local_timezone)}.')
     logging.info(f'Sunrise time is {sunrise_time.astimezone(local_timezone)}.')
+    logging.info(
+        f'Sunrise time with offset is {(sunrise_time_with_offset).astimezone(local_timezone)}')
     logging.info(f'Sleeping for {seconds_till_sunrise}s ({time_till_sunrise}) until sunrise.')
 
     await asyncio.sleep(seconds_till_sunrise)
@@ -118,13 +138,16 @@ async def set_event_at_sunset(event: asyncio.Event) -> None:
   while True:
     now = datetime.now().astimezone(timezone.utc)
     sunset_time = _sunset_time(now)
-    time_till_sunset = sunset_time - now
+    sunset_time_with_offset = sunset_time + timedelta(minutes=_SUNSET_OFFSET_MINUTES.value)
+    time_till_sunset = sunset_time_with_offset - now
     seconds_till_sunset = time_till_sunset.total_seconds()
 
     local_timezone = _local_timezone()
     logging.info(f'Local timezone is {local_timezone}.')
     logging.info(f'Time now is {now.astimezone(local_timezone)}.')
     logging.info(f'Sunset time is {sunset_time.astimezone(local_timezone)}.')
+    logging.info(
+        f'Sunset time with offset is {(sunset_time_with_offset).astimezone(local_timezone)}.')
     logging.info(f'Sleeping for {seconds_till_sunset}s ({time_till_sunset}) until sunset.')
 
     await asyncio.sleep(seconds_till_sunset)

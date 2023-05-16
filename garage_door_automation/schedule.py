@@ -99,6 +99,13 @@ def _sunrise_time(now: datetime) -> datetime:
   return sunrise_time
 
 
+def _sunrise_time_with_offset(now: datetime, sunrise_time: datetime) -> datetime:
+  sunset_time_with_offset = sunrise_time + timedelta(minutes=_SUNRISE_OFFSET_MINUTES.value)
+  if sunset_time_with_offset < now:
+    sunset_time_with_offset += timedelta(days=1)
+  return sunset_time_with_offset
+
+
 def _sunset_time(now: datetime) -> datetime:
   sunset_time = Sun(_LATITUDE.value, _LONGITUDE.value).get_sunset_time()
   if _SUNSET_HOUR.present:
@@ -108,11 +115,18 @@ def _sunset_time(now: datetime) -> datetime:
   return sunset_time
 
 
+def _sunset_time_with_offset(now: datetime, sunset_time: datetime) -> datetime:
+  sunset_time_with_offset = sunset_time + timedelta(minutes=_SUNSET_OFFSET_MINUTES.value)
+  if sunset_time_with_offset < now:
+    sunset_time_with_offset += timedelta(days=1)
+  return sunset_time_with_offset
+
+
 async def set_event_at_sunrise(event: asyncio.Event) -> None:
   while True:
     now = datetime.now().astimezone(timezone.utc)
     sunrise_time = _sunrise_time(now)
-    sunrise_time_with_offset = sunrise_time + timedelta(minutes=_SUNRISE_OFFSET_MINUTES.value)
+    sunrise_time_with_offset = _sunrise_time_with_offset(now, sunrise_time)
     time_till_sunrise = sunrise_time_with_offset - now
     seconds_till_sunrise = time_till_sunrise.total_seconds()
 
@@ -138,7 +152,7 @@ async def set_event_at_sunset(event: asyncio.Event) -> None:
   while True:
     now = datetime.now().astimezone(timezone.utc)
     sunset_time = _sunset_time(now)
-    sunset_time_with_offset = sunset_time + timedelta(minutes=_SUNSET_OFFSET_MINUTES.value)
+    sunset_time_with_offset = _sunset_time_with_offset(now, sunset_time)
     time_till_sunset = sunset_time_with_offset - now
     seconds_till_sunset = time_till_sunset.total_seconds()
 

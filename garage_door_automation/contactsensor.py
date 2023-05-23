@@ -3,10 +3,12 @@ import json
 import time
 from dataclasses import dataclass, field
 from enum import IntEnum
+from queue import Queue
 from typing import Any, Callable
 
 import asyncio_mqtt
 from absl import flags, logging
+from influxdb_client import Point
 
 
 class Position(IntEnum):
@@ -65,24 +67,27 @@ class ContactSensor:
   event: asyncio.Event = field(default_factory=asyncio.Event)
 
   _is_contact: bool = False
-  _last_update_epoch_s: int = 0
+  _last_updated_ns: int | None = None
 
   @property
   def is_contact(self) -> bool | None:
     if not self.is_valid():
+      since_last_updated_s = ((time.time_ns() - self._last_updated_ns) //
+                              10**6) if self._last_updated_ns is not None else '?'
       logging.warning(f'Sensor at {self.position.name} has invalid state. '
-                      f'Last updated at {int(time.time()) - self._last_update_epoch_s}s before.')
+                      f'Last updated at {since_last_updated_s}s before.')
       return None
     return self._is_contact
 
-  @is_contact.setter
-  def is_contact(self, value: bool) -> None:
+  def set_is_contact(self, value: bool) -> int | None:
     self._is_contact = value
-    self._last_update_epoch_s = int(time.time())
+    last_updated_ns = self._last_updated_ns
+    self._last_updated_ns = time.time_ns()
+    return self._last_updated_ns - last_updated_ns if last_updated_ns is not None else None
 
   def is_valid(self) -> bool:
-    seconds_since_last_update = int(time.time()) - self._last_update_epoch_s
-    return seconds_since_last_update < _CONTACT_SENSOR_STATE_VALIDITY_SECONDS.value
+    return (self._last_updated_ns is not None and time.time_ns() - self._last_updated_ns
+            < _CONTACT_SENSOR_STATE_VALIDITY_SECONDS.value * (10**6))
 
   def __str__(self) -> str:
     if not self.is_valid():
@@ -91,13 +96,35 @@ class ContactSensor:
       state = '='
     else:
       state = '-'
-    return str(self.position.value) + state + str(int(time.time()) - self._last_update_epoch_s)
+    since_last_updated_s = ((time.time_ns() - self._last_updated_ns) //
+                            10**6) if self._last_updated_ns is not None else '?'
+    return str(self.position.value) + state + str(since_last_updated_s)
 
 
 _SENSORS = {position: ContactSensor(position) for position in Position}
 
 
-def _process_message(message: asyncio_mqtt.Message) -> None:
+@dataclass
+class ContactSensorTimestamp:
+  position: Position
+  is_contact: bool
+  since_last_update_ns: int | None
+  time_ns: int = field(default_factory=time.time_ns)
+
+  def to_line_protocol(self) -> str:
+    # yapf: disable
+    return (Point
+        .measurement('contact_sensor')
+        .tag('position', self.position.name.lower())
+        .field('since_last_update_ns', self.since_last_update_ns if self.since_last_update_ns is not None else -1)
+        .field('is_contact', int(self.is_contact))
+        .time(self.time_ns)  # type: ignore
+        .to_line_protocol()
+    )
+    # yapf: enable
+
+
+def _process_message(message: asyncio_mqtt.Message, line_protocol_queue: Queue[str]) -> None:
   if not isinstance(message.payload, (str, bytes, bytearray)):
     logging.error('Expected message payload type to be str, bytes, or bytearray.')
     return
@@ -118,16 +145,24 @@ def _process_message(message: asyncio_mqtt.Message) -> None:
     if sensor.topic != topic:
       continue
 
-    sensor.is_contact = is_contact
+    since_last_update_ns = sensor.set_is_contact(is_contact)
     sensor.event.set()
     sensor_status = ', '.join([str(sensor) for sensor in _SENSORS.values()])
     logging.info(f'Sensor status: {sensor_status}')
+
+    line_protocol_queue.put(
+        ContactSensorTimestamp(
+            position=sensor.position,
+            is_contact=is_contact,
+            since_last_update_ns=since_last_update_ns,
+        ).to_line_protocol())
     return
 
   logging.error(f'No sensor matched topic "{topic}".')
 
 
-def get_message_processors() -> dict[str, Callable[[asyncio_mqtt.Message], None]]:
+def get_message_processors(
+    line_protocol_queue: Queue[str]) -> dict[str, Callable[[asyncio_mqtt.Message], None]]:
   if len(_CONTACT_SENSOR_TOPICS.value) != len(Position):
     raise ValueError(f'Expected {len(Position)} MQTT topics, '
                      f'got {len(_CONTACT_SENSOR_TOPICS.value)} instead.')
@@ -137,14 +172,15 @@ def get_message_processors() -> dict[str, Callable[[asyncio_mqtt.Message], None]
       raise ValueError()
 
     for i, state in enumerate(_CONTACT_SENSOR_INITIAL_STATES.value):
-      _SENSORS[Position(i)].is_contact = (state != 0)
+      _SENSORS[Position(i)].set_is_contact(state != 0)
     logging.debug([sensor.is_contact for sensor in _SENSORS.values()])
 
   topic: str
   for i, topic in enumerate(_CONTACT_SENSOR_TOPICS.value):
     _SENSORS[Position(i)].topic = topic
 
-  return {topic: _process_message for topic in _CONTACT_SENSOR_TOPICS.value}
+  process_message = lambda message: _process_message(message, line_protocol_queue)
+  return {topic: process_message for topic in _CONTACT_SENSOR_TOPICS.value}
 
 
 def where() -> Position | None:

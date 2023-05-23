@@ -1,3 +1,4 @@
+from queue import Queue
 from typing import Callable
 
 import asyncio_mqtt
@@ -49,8 +50,8 @@ def create_mqtt_client() -> asyncio_mqtt.Client:
   )
 
 
-async def subscribe(client: asyncio_mqtt.Client) -> None:
-  MESSAGE_PROCESSORS.update(contact_sensor.get_message_processors())
+async def subscribe(client: asyncio_mqtt.Client, line_protocol_queue: Queue[str]) -> None:
+  MESSAGE_PROCESSORS.update(contact_sensor.get_message_processors(line_protocol_queue))
   for topic in MESSAGE_PROCESSORS.keys():
     await client.subscribe(topic)
 

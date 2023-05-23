@@ -1,8 +1,15 @@
 import asyncio
+import time
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from decimal import Decimal
+from enum import StrEnum
+from queue import Queue
+from typing import Literal
 
 import pytz
 from absl import flags, logging
+from influxdb_client import Point
 from suntime import Sun
 from timezonefinder import TimezoneFinderL
 
@@ -79,6 +86,38 @@ _SUNSET_OFFSET_MINUTES = flags.DEFINE_integer(
 )
 
 
+class ScheduleTimestampName(StrEnum):
+  SUNRISE = 'sunrise'
+  SUNSET = 'sunset'
+
+
+@dataclass
+class SunScheduleTimestamp:
+  name: Literal[ScheduleTimestampName.SUNRISE] | Literal[ScheduleTimestampName.SUNSET]
+  latitude: float
+  longitude: float
+  local_timezone_name: str | None
+  is_manual_timezone: bool
+  offset_minutes: int
+  timestamp_ns: int  # For the timestamp of the scheduled event.
+  time_ns: int = field(default_factory=time.time_ns)  # For when the timestamp was calculated.
+
+  def to_line_protocol(self) -> str:
+    # yapf: disable
+    return (Point
+        .measurement('schedule')
+        .tag('name', self.name.value)
+        .tag('local_timezone_name', self.local_timezone_name if self.local_timezone_name is not None else '')
+        .tag('is_manual_timezone', self.is_manual_timezone)
+        .field('latitude', self.latitude)
+        .field('longitude', self.longitude)
+        .field('offset_minutes', self.offset_minutes)
+        .field('timestamp_ns', self.timestamp_ns)
+        .time(self.time_ns)  # type: ignore
+        .to_line_protocol())
+    # yapf: enable
+
+
 def _local_timezone():
   if _LOCAL_TIMEZONE_NAME.present:
     local_timezone_name = str(_LOCAL_TIMEZONE_NAME.value)
@@ -122,7 +161,7 @@ def _sunset_time_with_offset(now: datetime, sunset_time: datetime) -> datetime:
   return sunset_time_with_offset
 
 
-async def set_event_at_sunrise(event: asyncio.Event) -> None:
+async def set_event_at_sunrise(event: asyncio.Event, line_protocol_queue: Queue[str]) -> None:
   while True:
     now = datetime.now().astimezone(timezone.utc)
     sunrise_time = _sunrise_time(now)
@@ -138,6 +177,17 @@ async def set_event_at_sunrise(event: asyncio.Event) -> None:
         f'Sunrise time with offset is {(sunrise_time_with_offset).astimezone(local_timezone)}')
     logging.info(f'Sleeping for {seconds_till_sunrise}s ({time_till_sunrise}) until sunrise.')
 
+    line_protocol_queue.put(
+        SunScheduleTimestamp(
+            name=ScheduleTimestampName.SUNRISE,
+            latitude=_LATITUDE.value,
+            longitude=_LONGITUDE.value,
+            local_timezone_name=local_timezone.zone if local_timezone is not None else None,
+            is_manual_timezone=_LOCAL_TIMEZONE_NAME.present,
+            offset_minutes=_SUNRISE_OFFSET_MINUTES.value,
+            timestamp_ns=int(Decimal(sunrise_time_with_offset.timestamp()) * (10**6)),
+        ).to_line_protocol())
+
     await asyncio.sleep(seconds_till_sunrise)
     event.set()
     logging.info('Sunrise event was set.')
@@ -148,7 +198,7 @@ async def set_event_at_sunrise(event: asyncio.Event) -> None:
     await asyncio.sleep(30 * 60)
 
 
-async def set_event_at_sunset(event: asyncio.Event) -> None:
+async def set_event_at_sunset(event: asyncio.Event, line_protocol_queue: Queue[str]) -> None:
   while True:
     now = datetime.now().astimezone(timezone.utc)
     sunset_time = _sunset_time(now)
@@ -163,6 +213,17 @@ async def set_event_at_sunset(event: asyncio.Event) -> None:
     logging.info(
         f'Sunset time with offset is {(sunset_time_with_offset).astimezone(local_timezone)}.')
     logging.info(f'Sleeping for {seconds_till_sunset}s ({time_till_sunset}) until sunset.')
+
+    line_protocol_queue.put(
+        SunScheduleTimestamp(
+            name=ScheduleTimestampName.SUNSET,
+            latitude=_LATITUDE.value,
+            longitude=_LONGITUDE.value,
+            local_timezone_name=local_timezone.zone if local_timezone is not None else None,
+            is_manual_timezone=_LOCAL_TIMEZONE_NAME.present,
+            offset_minutes=_SUNSET_OFFSET_MINUTES.value,
+            timestamp_ns=int(Decimal(sunset_time_with_offset.timestamp()) * (10**6)),
+        ).to_line_protocol())
 
     await asyncio.sleep(seconds_till_sunset)
     event.set()

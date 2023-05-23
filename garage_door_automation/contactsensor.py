@@ -73,7 +73,7 @@ class ContactSensor:
   def is_contact(self) -> bool | None:
     if not self.is_valid():
       since_last_updated_s = ((time.time_ns() - self._last_updated_ns) //
-                              10**6) if self._last_updated_ns is not None else '?'
+                              10**9) if self._last_updated_ns is not None else '?'
       logging.warning(f'Sensor at {self.position.name} has invalid state. '
                       f'Last updated at {since_last_updated_s}s before.')
       return None
@@ -87,7 +87,7 @@ class ContactSensor:
 
   def is_valid(self) -> bool:
     return (self._last_updated_ns is not None and time.time_ns() - self._last_updated_ns
-            < _CONTACT_SENSOR_STATE_VALIDITY_SECONDS.value * (10**6))
+            < _CONTACT_SENSOR_STATE_VALIDITY_SECONDS.value * (10**9))
 
   def __str__(self) -> str:
     if not self.is_valid():
@@ -97,7 +97,7 @@ class ContactSensor:
     else:
       state = '-'
     since_last_updated_s = ((time.time_ns() - self._last_updated_ns) //
-                            10**6) if self._last_updated_ns is not None else '?'
+                            10**9) if self._last_updated_ns is not None else '?'
     return str(self.position.value) + state + str(since_last_updated_s)
 
 

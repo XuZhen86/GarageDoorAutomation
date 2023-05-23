@@ -185,7 +185,7 @@ async def set_event_at_sunrise(event: asyncio.Event, line_protocol_queue: Queue[
             local_timezone_name=local_timezone.zone if local_timezone is not None else None,
             is_manual_timezone=_LOCAL_TIMEZONE_NAME.present,
             offset_minutes=_SUNRISE_OFFSET_MINUTES.value,
-            timestamp_ns=int(Decimal(sunrise_time_with_offset.timestamp()) * (10**6)),
+            timestamp_ns=int(Decimal(sunrise_time_with_offset.timestamp()) * (10**9)),
         ).to_line_protocol())
 
     await asyncio.sleep(seconds_till_sunrise)
@@ -222,7 +222,7 @@ async def set_event_at_sunset(event: asyncio.Event, line_protocol_queue: Queue[s
             local_timezone_name=local_timezone.zone if local_timezone is not None else None,
             is_manual_timezone=_LOCAL_TIMEZONE_NAME.present,
             offset_minutes=_SUNSET_OFFSET_MINUTES.value,
-            timestamp_ns=int(Decimal(sunset_time_with_offset.timestamp()) * (10**6)),
+            timestamp_ns=int(Decimal(sunset_time_with_offset.timestamp()) * (10**9)),
         ).to_line_protocol())
 
     await asyncio.sleep(seconds_till_sunset)

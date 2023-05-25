@@ -5,6 +5,7 @@ import asyncio_mqtt
 from absl import flags, logging
 
 import garage_door_automation.contactsensor as contact_sensor
+import garage_door_automation.motionsensor as motion_sensor
 
 _MQTT_CLIENT_ID = flags.DEFINE_string(
     name='mqtt_client_id',
@@ -52,6 +53,7 @@ def create_mqtt_client() -> asyncio_mqtt.Client:
 
 async def subscribe(client: asyncio_mqtt.Client, line_protocol_queue: Queue[str]) -> None:
   MESSAGE_PROCESSORS.update(contact_sensor.get_message_processors(line_protocol_queue))
+  MESSAGE_PROCESSORS.update(motion_sensor.get_message_processors(line_protocol_queue))
   for topic in MESSAGE_PROCESSORS.keys():
     await client.subscribe(topic)
 

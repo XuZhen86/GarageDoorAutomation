@@ -1,14 +1,15 @@
 import asyncio
-import json
 import time
 from dataclasses import dataclass, field
 from enum import IntEnum
 from queue import Queue
-from typing import Any, Callable
+from typing import Callable
 
 import asyncio_mqtt
 from absl import flags, logging
 from influxdb_client import Point
+
+from garage_door_automation.mqtt import get_value, parse_payload
 
 
 class Position(IntEnum):
@@ -106,9 +107,15 @@ _SENSORS = {position: ContactSensor(position) for position in Position}
 
 @dataclass
 class ContactSensorTimestamp:
-  position: Position
+  battery_percent: int
   is_contact: bool
+  link_quality: int
+  position: Position
+  power_outage_count: int
   since_last_update_ns: int | None
+  temperature_c: int
+  voltage_mv: int
+
   time_ns: int = field(default_factory=time.time_ns)
 
   def to_line_protocol(self) -> str:
@@ -116,8 +123,13 @@ class ContactSensorTimestamp:
     return (Point
         .measurement('contact_sensor')
         .tag('position', self.position.name.lower())
-        .field('since_last_update_ns', self.since_last_update_ns if self.since_last_update_ns is not None else -1)
+        .field('battery_percent', self.battery_percent)
         .field('is_contact', int(self.is_contact))
+        .field('link_quality', self.link_quality)
+        .field('power_outage_count', self.power_outage_count)
+        .field('since_last_update_ns', self.since_last_update_ns if self.since_last_update_ns is not None else -1)
+        .field('temperature_c', self.temperature_c)
+        .field('voltage_mv', self.voltage_mv)
         .time(self.time_ns)  # type: ignore
         .to_line_protocol()
     )
@@ -125,19 +137,16 @@ class ContactSensorTimestamp:
 
 
 def _process_message(message: asyncio_mqtt.Message, line_protocol_queue: Queue[str]) -> None:
-  if not isinstance(message.payload, (str, bytes, bytearray)):
-    logging.error('Expected message payload type to be str, bytes, or bytearray.')
-    return
-
   try:
-    payload: dict[str, Any] = json.loads(message.payload)
-  except:
-    logging.error('Unable to decode JSON payload.')
-    return
-
-  is_contact = payload.get('contact')
-  if not isinstance(is_contact, bool):
-    logging.error('Invalid value type for key "contact".')
+    payload = parse_payload(message)
+    battery_percent: int = get_value(payload, 'battery', int)
+    is_contact: bool = get_value(payload, 'contact', bool)
+    link_quality: int = get_value(payload, 'linkquality', int)
+    power_outage_count: int = get_value(payload, 'power_outage_count', int)
+    temperature_c: int = get_value(payload, 'device_temperature', int)
+    voltage_mv: int = get_value(payload, 'voltage', int)
+  except ValueError as e:
+    logging.error(e)
     return
 
   topic = message.topic.value
@@ -152,9 +161,14 @@ def _process_message(message: asyncio_mqtt.Message, line_protocol_queue: Queue[s
 
     line_protocol_queue.put(
         ContactSensorTimestamp(
-            position=sensor.position,
+            battery_percent=battery_percent,
             is_contact=is_contact,
+            link_quality=link_quality,
+            position=sensor.position,
+            power_outage_count=power_outage_count,
             since_last_update_ns=since_last_update_ns,
+            temperature_c=temperature_c,
+            voltage_mv=voltage_mv,
         ).to_line_protocol())
     return
 

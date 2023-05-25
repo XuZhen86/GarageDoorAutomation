@@ -1,12 +1,13 @@
-import json
 import time
 from dataclasses import dataclass, field
 from queue import Queue
-from typing import Any, Callable
+from typing import Callable
 
 import asyncio_mqtt
 from absl import flags, logging
 from influxdb_client import Point
+
+from garage_door_automation.mqtt import get_value, parse_payload
 
 _MOTION_SENSOR_TOPIC = flags.DEFINE_string(
     name='motion_sensor_topic',
@@ -18,48 +19,52 @@ _MOTION_SENSOR_TOPIC = flags.DEFINE_string(
 
 @dataclass
 class MotionSensorTimestamp:
-  is_occupied: bool
+  battery_percent: int
   is_illuminance_above_threshold: bool
+  is_occupied: bool
+  link_quality: int
+  requested_brightness_level: int
+  requested_brightness_percent: int
+
   time_ns: int = field(default_factory=time.time_ns)
 
   def to_line_protocol(self) -> str:
     # yapf: disable
     return (Point
         .measurement('motion_sensor')
-        .field('is_occupied', int(self.is_occupied))
+        .field('battery_percent', self.battery_percent)
         .field('is_illuminance_above_threshold',int(self.is_illuminance_above_threshold))
+        .field('is_occupied', int(self.is_occupied))
+        .field('link_quality', self.link_quality)
+        .field('requested_brightness_level', self.requested_brightness_level)
+        .field('requested_brightness_percent', self.requested_brightness_percent)
         .time(self.time_ns)  # type: ignore
         .to_line_protocol())
     # yapf: enable
 
 
 def _process_message(message: asyncio_mqtt.Message, line_protocol_queue: Queue[str]) -> None:
-  if not isinstance(message.payload, (str, bytes, bytearray)):
-    logging.error('Expected message payload type to be str, bytes, or bytearray.')
-    return
-
   try:
-    payload: dict[str, Any] = json.loads(message.payload)
-  except:
-    logging.error('Unable to decode JSON payload.')
-    return
-
-  is_occupied = payload.get('occupancy')
-  if not isinstance(is_occupied, bool):
-    logging.error('Invalid value type for key "occupancy".')
-    return
-
-  is_illuminance_above_threshold = payload.get('illuminance_above_threshold')
-  if not isinstance(is_illuminance_above_threshold, bool):
-    logging.error('Invalid value type for key "illuminance_above_threshold".')
+    payload = parse_payload(message)
+    batter_percent: int = get_value(payload, 'battery', int)
+    is_illuminance_above_threshold: bool = get_value(payload, 'illuminance_above_threshold', bool)
+    is_occupied: bool = get_value(payload, 'occupancy', bool)
+    link_quality: int = get_value(payload, 'linkquality', int)
+    requested_brightness_level: int = get_value(payload, 'requested_brightness_level', int)
+    requested_brightness_percent: int = get_value(payload, 'requested_brightness_percent', int)
+  except ValueError as e:
+    logging.error(e)
     return
 
   line_protocol_queue.put(
       MotionSensorTimestamp(
-          is_occupied=is_occupied,
+          battery_percent=batter_percent,
           is_illuminance_above_threshold=is_illuminance_above_threshold,
+          is_occupied=is_occupied,
+          link_quality=link_quality,
+          requested_brightness_level=requested_brightness_level,
+          requested_brightness_percent=requested_brightness_percent,
       ).to_line_protocol())
-  return
 
 
 def get_message_processors(

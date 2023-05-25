@@ -9,7 +9,7 @@ import asyncio_mqtt
 from absl import flags, logging
 from influxdb_client import Point
 
-from garage_door_automation.mqtt import get_value, parse_payload
+from garage_door_automation.util import get_value, parse_payload
 
 
 class Position(IntEnum):

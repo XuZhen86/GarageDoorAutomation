@@ -24,7 +24,7 @@ def parse_payload(message: asyncio_mqtt.Message) -> dict[str, Any]:
 
 
 def get_value(payload: dict[str, Any], key: str, expected_class: type):
-  value = payload.get('contact')
+  value = payload.get(key)
 
   if value is None or not isinstance(value, expected_class):
     raise ValueError(f'Expected value type {expected_class} for key "{key}" but got {type(value)}.')

@@ -142,7 +142,7 @@ def _put_sensor_datapoint(message: asyncio_mqtt.Message, line_protocol_queue: Qu
 
 
 def _invoke_webhooks(message: asyncio_mqtt.Message) -> None:
-  if message.topic.value != _OUTDOOR_MOTION_SENSOR_TOPIC:
+  if message.topic.value != _OUTDOOR_MOTION_SENSOR_TOPIC.value:
     return
 
   try:

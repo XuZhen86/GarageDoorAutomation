@@ -11,4 +11,4 @@ clean:
 	rm -rf *.egg-info build
 
 docker-image:
-	docker build -t garage-door-automation .
+	docker build --pull --no-cache --tag garage-door-automation .

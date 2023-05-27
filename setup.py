@@ -12,6 +12,7 @@ setuptools.setup(
         'asyncio-mqtt>=0.16.1',
         'line_protocol_cache@git+https://github.com/XuZhen86/LineProtocolCache@e4e41da436e97fec68c297bca3ea392d5b47b68c',
         'pytz>=2023.3',
+        'requests>=2.28.1',
         'suntime>=1.2.5',
         'timezonefinder>=6.2.0',
     ],

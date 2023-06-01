@@ -182,12 +182,11 @@ def _process_message(message: asyncio_mqtt.Message, line_protocol_queue: Queue[s
   _invoke_webhooks(message)
 
 
-def _process_flags() -> dict[str, MotionSensor]:
+def _process_flags() -> None:
   if len(_MOTION_SENSOR_MQTT_TOPICS.value) != len(_MOTION_SENSOR_NICK_NAMES.value) != len(
       _MOTION_SENSOR_OCCUPANCY_WEBHOOKS.value) != len(_MOTION_SENSOR_VACANCY_WEBHOOKS.value):
     raise ValueError('Length of flags motion_sensor_* are not the same.')
 
-  motion_sensors: dict[str, MotionSensor] = dict()
   for i, mqtt_topic in enumerate(_MOTION_SENSOR_MQTT_TOPICS.value):
     nick_name: str = _MOTION_SENSOR_NICK_NAMES.value[i]
     occupancy_webhook = (str(_MOTION_SENSOR_OCCUPANCY_WEBHOOKS.value[i])
@@ -201,13 +200,11 @@ def _process_flags() -> dict[str, MotionSensor]:
         occupancy_webhook=occupancy_webhook,
         vacancy_webhook=vacancy_webhook,
     )
-    motion_sensors[mqtt_topic] = motion_sensor
-
-  return motion_sensors
+    _MOTION_SENSORS[mqtt_topic] = motion_sensor
 
 
 def get_message_processors(
     line_protocol_queue: Queue[str]) -> dict[str, Callable[[asyncio_mqtt.Message], None]]:
-  _MOTION_SENSORS = _process_flags()
+  _process_flags()
   process_message = lambda message: _process_message(message, line_protocol_queue)
   return {topic: process_message for topic in _MOTION_SENSORS.keys()}

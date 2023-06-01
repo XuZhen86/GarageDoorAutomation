@@ -1,5 +1,5 @@
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, asdict
 from decimal import Decimal
 from enum import StrEnum
 from queue import Queue
@@ -10,65 +10,51 @@ import requests
 from absl import flags, logging
 from influxdb_client import Point
 
-from garage_door_automation.util import get_value, parse_payload
+from garage_door_automation.util import get_value, get_value_or_none, parse_payload
 
-_INDOOR_MOTION_SENSOR_TOPIC = flags.DEFINE_string(
-    name='indoor_motion_sensor_topic',
+_MOTION_SENSOR_MQTT_TOPICS = flags.DEFINE_multi_string(
+    name='motion_sensor_mqtt_topics',
     default=None,
     required=True,
-    help='Specify the MQTT topics for the indoor motion sensor.',
+    help='Specify the MQTT topics for the motion sensors.',
 )
 
-_OUTDOOR_MOTION_SENSOR_TOPIC = flags.DEFINE_string(
-    name='outdoor_motion_sensor_topic',
+_MOTION_SENSOR_NICK_NAMES = flags.DEFINE_multi_string(
+    name='motion_sensor_nick_names',
     default=None,
     required=True,
-    help='Specify the MQTT topics for the outdoor motion sensor.',
+    help='Specify the nick names for the motion sensors.',
 )
 
-_OUTDOOR_MOTION_SENSOR_OCCUPANCY_WEBHOOK = flags.DEFINE_string(
-    name='outdoor_motion_sensor_occupancy_webhook',
+_MOTION_SENSOR_OCCUPANCY_WEBHOOKS = flags.DEFINE_multi_string(
+    name='motion_sensor_occupancy_webhooks',
     default=None,
-    required=False,
-    help='Specify the webhook to invoke when occupancy is detected.',
+    required=True,
+    help='Specify the webhooks to invoke when occupancy is detected. '
+    'Use "-" if webhook for that sensor is disabled.',
 )
 
-_OUTDOOR_MOTION_SENSOR_VACANCY_WEBHOOK = flags.DEFINE_string(
-    name='outdoor_motion_sensor_vacancy_webhook',
+_MOTION_SENSOR_VACANCY_WEBHOOKS = flags.DEFINE_multi_string(
+    name='motion_sensor_vacancy_webhooks',
     default=None,
-    required=False,
-    help='Specify the webhook to invoke when occupancy is no longer detected.',
+    required=True,
+    help='Specify the webhooks to invoke when occupancy is no longer detected. '
+    'Use "-" if webhook for that sensor is disabled.',
 )
 
 
-@dataclass
-class IndoorMotionSensorTimestamp:
-  battery_percent: int
-  is_illuminance_above_threshold: bool
-  is_occupied: bool
-  link_quality: int
-  requested_brightness_level: int
-  requested_brightness_percent: int
-
-  time_ns: int = field(default_factory=time.time_ns)
-
-  def to_line_protocol(self) -> str:
-    # yapf: disable
-    return (Point
-        .measurement('motion_sensor')
-        .tag('position', 'indoor')
-        .field('battery_percent', self.battery_percent)
-        .field('is_illuminance_above_threshold',int(self.is_illuminance_above_threshold))
-        .field('is_occupied', int(self.is_occupied))
-        .field('link_quality', self.link_quality)
-        .field('requested_brightness_level', self.requested_brightness_level)
-        .field('requested_brightness_percent', self.requested_brightness_percent)
-        .time(self.time_ns)  # type: ignore
-        .to_line_protocol())
-    # yapf: enable
+@dataclass(frozen=True)
+class MotionSensor:
+  mqtt_topic: str
+  nick_name: str
+  occupancy_webhook: str | None = None
+  vacancy_webhook: str | None = None
 
 
-class OutdoorMotionSensorMotionSensitivity(StrEnum):
+_MOTION_SENSORS: dict[str, MotionSensor] = dict()
+
+
+class MotionSensitivity(StrEnum):
   LOW = 'low'
   MEDIUM = 'medium'
   HIGH = 'high'
@@ -76,105 +62,152 @@ class OutdoorMotionSensorMotionSensitivity(StrEnum):
   MAX = 'max'
 
 
-@dataclass
-class OutdoorMotionSensorTimestamp:
+@dataclass(frozen=True)
+class MotionSensorDataPoint:
+  motion_sensor: MotionSensor
   battery_percent: int
-  has_led_indication: bool
-  illuminance: int
-  illuminance_lux: int
   is_occupied: bool
   link_quality: int
-  motion_sensitivity: OutdoorMotionSensorMotionSensitivity
-  occupancy_timeout_s: int
-  temperature_c_1000x: int
 
-  time_ns: int = field(default_factory=time.time_ns)
+  is_illuminance_above_threshold: bool | None = None
+  requested_brightness_level: int | None = None
+  requested_brightness_percent: int | None = None
 
-  def to_line_protocol(self) -> str:
+  has_led_indication: bool | None = None
+  illuminance: int | None = None
+  illuminance_lux: int | None = None
+  motion_sensitivity: MotionSensitivity | None = None
+  occupancy_timeout_s: int | None = None
+  temperature_c_1000x: int | None = None
+
+  def to_line_protocol(self, time_ns: int = time.time_ns()) -> str:
     # yapf: disable
-    return (Point
-        .measurement('motion_sensor')
-        .tag('position', 'outdoor')
-        .field('battery_percent', self.battery_percent)
-        .field('has_led_indication', int(self.has_led_indication))
-        .field('illuminance', self.illuminance)
-        .field('illuminance_lux', self.illuminance_lux)
-        .field('is_occupied', int(self.is_occupied))
-        .field('link_quality', self.link_quality)
-        .field('motion_sensitivity', str(self.motion_sensitivity))
-        .field('occupancy_timeout_s', self.occupancy_timeout_s)
-        .field('temperature_c_1000x', self.temperature_c_1000x)
-        .time(self.time_ns)  # type: ignore
-        .to_line_protocol())
+    point = (Point('motion_sensor')
+        .tag('nick_name', self.motion_sensor.nick_name)
+        .tag('mqtt_topic', self.motion_sensor.mqtt_topic)
+        .time(time_ns))  # type: ignore
     # yapf: enable
 
+    for key, value in asdict(self).items():
+      if value is not None:
+        point.field(key, value)
+    return point.to_line_protocol()
 
-def _put_sensor_datapoint(message: asyncio_mqtt.Message, line_protocol_queue: Queue[str]) -> None:
+
+def _put_sensor_data_point(message: asyncio_mqtt.Message, line_protocol_queue: Queue[str]) -> None:
+  topic = message.topic.value
+  motion_sensor = _MOTION_SENSORS.get(topic)
+  if motion_sensor is None:
+    logging.error(f'Unknown MQTT topic: {topic}')
+    return
+
   try:
     payload = parse_payload(message)
-    if message.topic.value == _INDOOR_MOTION_SENSOR_TOPIC.value:
-      sensor_timestamp = IndoorMotionSensorTimestamp(
-          battery_percent=get_value(payload, 'battery', int),
-          is_illuminance_above_threshold=get_value(payload, 'illuminance_above_threshold', bool),
-          is_occupied=get_value(payload, 'occupancy', bool),
-          link_quality=get_value(payload, 'linkquality', int),
-          requested_brightness_level=get_value(payload, 'requested_brightness_level', int),
-          requested_brightness_percent=get_value(payload, 'requested_brightness_percent', int),
-      )
-    else:
-      sensor_timestamp = OutdoorMotionSensorTimestamp(
-          battery_percent=get_value(payload, 'battery', int),
-          has_led_indication=get_value(payload, 'led_indication', bool),
-          illuminance=get_value(payload, 'illuminance', int),
-          illuminance_lux=get_value(payload, 'illuminance_lux', int),
-          is_occupied=get_value(payload, 'occupancy', bool),
-          link_quality=get_value(payload, 'linkquality', int),
-          motion_sensitivity=OutdoorMotionSensorMotionSensitivity(
-              get_value(payload, 'motion_sensitivity', str)),
-          occupancy_timeout_s=get_value(payload, 'occupancy_timeout', int),
-          temperature_c_1000x=int(Decimal(get_value(payload, 'temperature', float)) * 1000),
-      )
+    battery_percent: int = get_value(payload, 'battery', int)
+    is_occupied: bool = get_value(payload, 'occupancy', bool)
+    link_quality: int = get_value(payload, 'linkquality', int)
   except ValueError as e:
     logging.error(e)
     return
 
-  line_protocol_queue.put(sensor_timestamp.to_line_protocol())
+  try:
+    is_illuminance_above_threshold: bool | None = get_value_or_none(payload,
+                                                                    'illuminance_above_threshold',
+                                                                    bool)
+    requested_brightness_level: int | None = get_value_or_none(payload,
+                                                               'requested_brightness_level', int)
+    requested_brightness_percent: int | None = get_value_or_none(payload,
+                                                                 'requested_brightness_percent',
+                                                                 int)
+
+    has_led_indication: bool | None = get_value_or_none(payload, 'led_indication', bool)
+    illuminance: int | None = get_value_or_none(payload, 'illuminance', int)
+    illuminance_lux: int | None = get_value_or_none(payload, 'illuminance_lux', int)
+    motion_sensitivity_str: str | None = get_value_or_none(payload, 'motion_sensitivity', str)
+    occupancy_timeout_s: int | None = get_value_or_none(payload, 'occupancy_timeout', int)
+    temperature_c: int | None = get_value_or_none(payload, 'temperature', float)
+  except ValueError as e:
+    logging.error(e)
+    return
+
+  motion_sensitivity = MotionSensitivity(
+      motion_sensitivity_str) if motion_sensitivity_str is not None else None
+  temperature_c_1000x = int(Decimal(temperature_c) * 1000) if temperature_c is not None else None
+
+  data_point = MotionSensorDataPoint(
+      motion_sensor=_MOTION_SENSORS[message.topic.value],
+      battery_percent=battery_percent,
+      is_occupied=is_occupied,
+      link_quality=link_quality,
+      is_illuminance_above_threshold=is_illuminance_above_threshold,
+      requested_brightness_level=requested_brightness_level,
+      requested_brightness_percent=requested_brightness_percent,
+      has_led_indication=has_led_indication,
+      illuminance=illuminance,
+      illuminance_lux=illuminance_lux,
+      motion_sensitivity=motion_sensitivity,
+      occupancy_timeout_s=occupancy_timeout_s,
+      temperature_c_1000x=temperature_c_1000x,
+  )
+  line_protocol_queue.put(data_point.to_line_protocol())
 
 
 def _invoke_webhooks(message: asyncio_mqtt.Message) -> None:
-  if message.topic.value != _OUTDOOR_MOTION_SENSOR_TOPIC.value:
+  topic = message.topic.value
+  motion_sensor = _MOTION_SENSORS.get(topic)
+  if motion_sensor is None:
+    logging.error(f'Unknown MQTT topic: {topic}')
     return
 
   try:
     payload = parse_payload(message)
-    is_occupied = get_value(payload, 'occupancy', bool)
+    is_occupied: bool = get_value(payload, 'occupancy', bool)
   except ValueError as e:
     logging.error(e)
     return
 
-  webhook_url: str | None = None
-  if is_occupied and _OUTDOOR_MOTION_SENSOR_OCCUPANCY_WEBHOOK.present:
-    webhook_url = _OUTDOOR_MOTION_SENSOR_OCCUPANCY_WEBHOOK.value
-  if not is_occupied and _OUTDOOR_MOTION_SENSOR_VACANCY_WEBHOOK.present:
-    webhook_url = _OUTDOOR_MOTION_SENSOR_VACANCY_WEBHOOK.value
-
+  webhook_url = motion_sensor.occupancy_webhook if is_occupied else motion_sensor.vacancy_webhook
   if webhook_url is None:
     return
 
   response = requests.get(webhook_url, timeout=10)
   if response.status_code != 200:
-    logging.error(f'Webhook invocation failed, status_code={response.status_code}.')
+    logging.error(f'Webhook invocation failed for motion sensor {motion_sensor.nick_name}, '
+                  f'is_occupied={is_occupied}, '
+                  f'status_code={response.status_code}.')
 
 
 def _process_message(message: asyncio_mqtt.Message, line_protocol_queue: Queue[str]) -> None:
-  _put_sensor_datapoint(message, line_protocol_queue)
+  _put_sensor_data_point(message, line_protocol_queue)
   _invoke_webhooks(message)
+
+
+def _process_flags() -> dict[str, MotionSensor]:
+  if len(_MOTION_SENSOR_MQTT_TOPICS.value) != len(_MOTION_SENSOR_NICK_NAMES.value) != len(
+      _MOTION_SENSOR_OCCUPANCY_WEBHOOKS.value) != len(_MOTION_SENSOR_VACANCY_WEBHOOKS.value):
+    raise ValueError('Length of flags motion_sensor_* are not the same.')
+
+  motion_sensors: dict[str, MotionSensor] = dict()
+  for i, mqtt_topic in enumerate(_MOTION_SENSOR_MQTT_TOPICS.value):
+    nick_name: str = _MOTION_SENSOR_NICK_NAMES.value[i]
+    occupancy_webhook = (str(_MOTION_SENSOR_OCCUPANCY_WEBHOOKS.value[i])
+                         if _MOTION_SENSOR_OCCUPANCY_WEBHOOKS.value[i] != '-' else None)
+    vacancy_webhook = (str(_MOTION_SENSOR_VACANCY_WEBHOOKS.value[i])
+                       if _MOTION_SENSOR_VACANCY_WEBHOOKS.value[i] != '-' else None)
+
+    motion_sensor = MotionSensor(
+        mqtt_topic=mqtt_topic,
+        nick_name=nick_name,
+        occupancy_webhook=occupancy_webhook,
+        vacancy_webhook=vacancy_webhook,
+    )
+    motion_sensors[mqtt_topic] = motion_sensor
+
+  return motion_sensors
 
 
 def get_message_processors(
     line_protocol_queue: Queue[str]) -> dict[str, Callable[[asyncio_mqtt.Message], None]]:
+  _MOTION_SENSORS = _process_flags()
   process_message = lambda message: _process_message(message, line_protocol_queue)
-  return {
-      _INDOOR_MOTION_SENSOR_TOPIC.value: process_message,
-      _OUTDOOR_MOTION_SENSOR_TOPIC.value: process_message,
-  }
+  return {topic: process_message for topic in _MOTION_SENSORS.keys()}

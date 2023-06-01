@@ -30,3 +30,12 @@ def get_value(payload: dict[str, Any], key: str, expected_class: type):
     raise ValueError(f'Expected value type {expected_class} for key "{key}" but got {type(value)}.')
 
   return value
+
+
+def get_value_or_none(payload: dict[str, Any], key: str, expected_class: type):
+  value = payload.get(key)
+
+  if value is not None and not isinstance(value, expected_class):
+    raise ValueError(f'Expected value type {expected_class} for key "{key}" but got {type(value)}.')
+
+  return value

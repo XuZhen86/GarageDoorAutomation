@@ -91,7 +91,7 @@ class MotionSensorDataPoint:
     # yapf: enable
 
     for key, value in asdict(self).items():
-      if not key.startswith('-') and value is not None:
+      if not key.startswith('_') and value is not None:
         point.field(key, value)
     return point.to_line_protocol()
 

@@ -126,7 +126,10 @@ class _ContactSensorDataPoint:
   temperature_c: int
   voltage_mv: int
 
-  def to_line_protocol(self, time_ns: int = time.time_ns()) -> str:
+  def to_line_protocol(self, time_ns: int | None = None) -> str:
+    if time_ns is None:
+      time_ns = time.time_ns()
+
     # yapf: disable
     point = (Point('contact_sensor')
         .tag('position', self._contact_sensor.position.name)

@@ -82,7 +82,10 @@ class MotionSensorDataPoint:
   occupancy_timeout_s: int | None = None
   temperature_c_1000x: int | None = None
 
-  def to_line_protocol(self, time_ns: int = time.time_ns()) -> str:
+  def to_line_protocol(self, time_ns: int | None = None) -> str:
+    if time_ns is None:
+      time_ns = time.time_ns()
+
     # yapf: disable
     point = (Point('motion_sensor')
         .tag('nick_name', self._nick_name)

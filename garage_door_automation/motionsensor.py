@@ -64,8 +64,8 @@ class MotionSensitivity(StrEnum):
 
 @dataclass(frozen=True)
 class MotionSensorDataPoint:
-  nick_name: str
-  mqtt_topic: str
+  _nick_name: str
+  _mqtt_topic: str
 
   battery_percent: int
   is_occupied: bool
@@ -85,13 +85,13 @@ class MotionSensorDataPoint:
   def to_line_protocol(self, time_ns: int = time.time_ns()) -> str:
     # yapf: disable
     point = (Point('motion_sensor')
-        .tag('nick_name', self.nick_name)
-        .tag('mqtt_topic', self.mqtt_topic)
+        .tag('nick_name', self._nick_name)
+        .tag('mqtt_topic', self._mqtt_topic)
         .time(time_ns))  # type: ignore
     # yapf: enable
 
     for key, value in asdict(self).items():
-      if value is not None:
+      if not key.startswith('-') and value is not None:
         point.field(key, value)
     return point.to_line_protocol()
 
@@ -137,8 +137,8 @@ def _put_sensor_data_point(message: asyncio_mqtt.Message, line_protocol_queue: Q
   temperature_c_1000x = int(Decimal(temperature_c) * 1000) if temperature_c is not None else None
 
   data_point = MotionSensorDataPoint(
-      mqtt_topic=topic,
-      nick_name=_MOTION_SENSORS[topic].nick_name,
+      _mqtt_topic=topic,
+      _nick_name=_MOTION_SENSORS[topic].nick_name,
       battery_percent=battery_percent,
       is_occupied=is_occupied,
       link_quality=link_quality,

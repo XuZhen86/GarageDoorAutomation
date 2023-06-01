@@ -5,7 +5,7 @@ import asyncio_mqtt
 from absl import app, logging
 from line_protocol_cache.asyncproducer import AsyncLineProtocolCacheProducer
 
-from garage_door_automation.action import to_fully_closed, to_slightly_open
+from garage_door_automation.action import to_fully_closed, to_slightly_opened
 from garage_door_automation.mqtt import (create_mqtt_client, process_message_loop, subscribe)
 from garage_door_automation.schedule import (set_event_at_sunrise, set_event_at_sunset)
 
@@ -24,8 +24,8 @@ async def slightly_open_at_sunset(sunset_event: asyncio.Event, client: asyncio_m
     logging.info('Waiting for sunset event to be set.')
     await sunset_event.wait()
     sunset_event.clear()
-    logging.info('Sunset event was set, calling to_slightly_open().')
-    await to_slightly_open(client)
+    logging.info('Sunset event was set, calling to_slightly_opened().')
+    await to_slightly_opened(client)
 
 
 async def put_line_protocols(line_protocol_queue: Queue[str],

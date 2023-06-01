@@ -1,7 +1,7 @@
 import asyncio
 import time
-from dataclasses import dataclass, field
-from enum import IntEnum
+from dataclasses import asdict, dataclass, field
+from enum import Enum, auto
 from queue import Queue
 from typing import Callable
 
@@ -11,84 +11,91 @@ from influxdb_client import Point
 
 from garage_door_automation.util import get_value, parse_payload
 
-
-class Position(IntEnum):
-  FULLY_CLOSED = 0
-  SLIGHTLY_OPEN = 1
-  FULLY_OPEN = 2
-
-
-_CONTACT_SENSOR_TOPICS = flags.DEFINE_multi_string(
-    name='contact_sensor_topics',
+_CONTACT_SENSOR_MQTT_TOPICS = flags.DEFINE_multi_string(
+    name='contact_sensor_mqtt_topics',
     default=None,
     required=True,
-    help='Specify the MQTT topics for the contact sensors. ' +
-    f'Must be specified in order for: {[position.name for position in Position]}',
+    help='Specify the MQTT topics for the contact sensors.',
 )
-_CONTACT_SENSOR_STATE_VALIDITY_SECONDS = flags.DEFINE_integer(
-    name='contact_sensor_state_validity_seconds',
+
+_CONTACT_SENSOR_NICK_NAMES = flags.DEFINE_multi_string(
+    name='contact_sensor_nick_names',
     default=None,
     required=True,
-    help='Time in seconds where last reported sensor status should be valid for. '
-    'This should be set to equal the sensor\'s periodic update time.',
+    help='Specify the nick names for the contact sensors.',
+)
+
+
+class Position(Enum):
+  FULLY_CLOSED = auto()
+  SLIGHTLY_OPENED = auto()
+  FULLY_OPENED = auto()
+
+
+_CONTACT_SENSOR_POSITIONS = flags.DEFINE_multi_enum_class(
+    name='contact_sensor_positions',
+    default=None,
+    enum_class=Position,
+    required=True,
+    help='Specify the positions for the contact sensors',
 )
 
 _CONTACT_SENSOR_INITIAL_STATES = flags.DEFINE_multi_integer(
     name='contact_sensor_initial_states',
-    default=None,
-    required=False,
+    default=[-1] * len(Position),
+    upper_bound=1,
+    lower_bound=-1,
     help='Manually override sensor is_contact status upon startup. '
-    'Should only used for testing.',
+    'Should only used for testing. '
+    '-1 for undefined, 0 for not contacted, 1 for contacted.',
 )
-
+_CONTACT_SENSOR_STATE_VALIDITY_SECONDS = flags.DEFINE_integer(
+    name='contact_sensor_state_validity_seconds',
+    default=3060,
+    help='Time in seconds where last reported sensor status should be valid for. '
+    'This should be set to equal the sensor\'s periodic update time.',
+)
 _EXPECT_ENTER_MAX_SECONDS = flags.DEFINE_integer(
     name='expect_enter_max_seconds',
     lower_bound=0,
     upper_bound=30,
-    required=True,
-    default=None,
+    default=15,
     help='Maximun amount of time in seconds to wait for the door to enter a position.',
 )
 _EXPECT_EXIT_MAX_SECONDS = flags.DEFINE_integer(
     name='expect_exit_max_seconds',
     lower_bound=0,
     upper_bound=30,
-    required=True,
-    default=None,
+    default=2,
     help='Maximun amount of time in seconds to wait for the door to exit a position.',
 )
 
 
 @dataclass
-class ContactSensor:
+class _ContactSensor:
   position: Position
-  topic: str | None = None
+  mqtt_topic: str
+  nick_name: str
+  _is_contact: bool = False
+
   # field() is needed to ensure a new Event is created for each ContactSensor instance.
   # Otherwise it would refer to the same Event instance.
   event: asyncio.Event = field(default_factory=asyncio.Event)
+  last_updated_ns: int | None = None
 
-  _is_contact: bool = False
-  _last_updated_ns: int | None = None
+  def set_is_contact(self, is_contact: bool) -> None:
+    self._is_contact = is_contact
+    self.last_updated_ns = time.time_ns()
 
-  @property
-  def is_contact(self) -> bool | None:
-    if not self.is_valid():
-      since_last_updated_s = ((time.time_ns() - self._last_updated_ns) //
-                              10**9) if self._last_updated_ns is not None else '?'
-      logging.warning(f'Sensor at {self.position.name} has invalid state. '
-                      f'Last updated at {since_last_updated_s}s before.')
-      return None
+  def get_is_contact(self) -> bool | None:
     return self._is_contact
 
-  def set_is_contact(self, value: bool) -> int | None:
-    self._is_contact = value
-    last_updated_ns = self._last_updated_ns
-    self._last_updated_ns = time.time_ns()
-    return self._last_updated_ns - last_updated_ns if last_updated_ns is not None else None
-
   def is_valid(self) -> bool:
-    return (self._last_updated_ns is not None and time.time_ns() - self._last_updated_ns
-            < _CONTACT_SENSOR_STATE_VALIDITY_SECONDS.value * (10**9))
+    if self.last_updated_ns is None:
+      return False
+
+    since_last_updated_s = (time.time_ns() - self.last_updated_ns) // (10**9)
+    return since_last_updated_s < _CONTACT_SENSOR_STATE_VALIDITY_SECONDS.value
 
   def __str__(self) -> str:
     if not self.is_valid():
@@ -97,50 +104,70 @@ class ContactSensor:
       state = '='
     else:
       state = '-'
-    since_last_updated_s = ((time.time_ns() - self._last_updated_ns) //
-                            10**9) if self._last_updated_ns is not None else '?'
+
+    if self.last_updated_ns is None:
+      return str(self.position.value) + state + '?'
+
+    since_last_updated_s = (time.time_ns() - self.last_updated_ns) // (10**9)
     return str(self.position.value) + state + str(since_last_updated_s)
 
 
-_SENSORS = {position: ContactSensor(position) for position in Position}
+# Each sensor should have two mappings, one from MQTT topic and another from Position.
+_CONTACT_SENSORS: dict[str | Position, _ContactSensor] = dict()
 
 
-@dataclass
-class ContactSensorTimestamp:
+@dataclass(frozen=True)
+class _ContactSensorDataPoint:
+  _contact_sensor: _ContactSensor
+
   battery_percent: int
-  is_contact: bool
   link_quality: int
-  position: Position
   power_outage_count: int
-  since_last_update_ns: int | None
   temperature_c: int
   voltage_mv: int
 
-  time_ns: int = field(default_factory=time.time_ns)
-
-  def to_line_protocol(self) -> str:
+  def to_line_protocol(self, time_ns: int = time.time_ns()) -> str:
     # yapf: disable
-    return (Point
-        .measurement('contact_sensor')
-        .tag('position', self.position.name.lower())
-        .field('battery_percent', self.battery_percent)
-        .field('is_contact', int(self.is_contact))
-        .field('link_quality', self.link_quality)
-        .field('power_outage_count', self.power_outage_count)
-        .field('since_last_update_ns', self.since_last_update_ns if self.since_last_update_ns is not None else -1)
-        .field('temperature_c', self.temperature_c)
-        .field('voltage_mv', self.voltage_mv)
-        .time(self.time_ns)  # type: ignore
-        .to_line_protocol()
-    )
+    point = (Point('contact_sensor')
+        .tag('position', self._contact_sensor.position.name)
+        .tag('mqtt_topic', self._contact_sensor.mqtt_topic)
+        .tag('nick_name', self._contact_sensor.nick_name)
+        .time(time_ns))  # type: ignore
     # yapf: enable
 
+    for key, value in asdict(self).items():
+      if not key.startswith('_') and value is not None:
+        point.field(key, value)
+    return point.to_line_protocol()
 
-def _process_message(message: asyncio_mqtt.Message, line_protocol_queue: Queue[str]) -> None:
+
+def _update_sensor(message: asyncio_mqtt.Message) -> None:
+  topic = message.topic.value
+  contact_sensor = _CONTACT_SENSORS.get(topic)
+  if contact_sensor is None:
+    logging.error(f'Unknown MQTT topic: {topic}.')
+    return
+
+  try:
+    payload = parse_payload(message)
+    is_contact: bool = get_value(payload, 'contact', bool)
+  except ValueError as e:
+    logging.error(e)
+    return
+
+  contact_sensor.set_is_contact(is_contact)
+
+
+def _put_sensor_data_point(message: asyncio_mqtt.Message, line_protocol_queue: Queue[str]) -> None:
+  topic = message.topic.value
+  contact_sensor = _CONTACT_SENSORS.get(topic)
+  if contact_sensor is None:
+    logging.error(f'Unknown MQTT topic: {topic}.')
+    return
+
   try:
     payload = parse_payload(message)
     battery_percent: int = get_value(payload, 'battery', int)
-    is_contact: bool = get_value(payload, 'contact', bool)
     link_quality: int = get_value(payload, 'linkquality', int)
     power_outage_count: int = get_value(payload, 'power_outage_count', int)
     temperature_c: int = get_value(payload, 'device_temperature', int)
@@ -149,91 +176,79 @@ def _process_message(message: asyncio_mqtt.Message, line_protocol_queue: Queue[s
     logging.error(e)
     return
 
-  topic = message.topic.value
-  for sensor in _SENSORS.values():
-    if sensor.topic != topic:
-      continue
+  data_point = _ContactSensorDataPoint(
+      _contact_sensor=contact_sensor,
+      battery_percent=battery_percent,
+      link_quality=link_quality,
+      power_outage_count=power_outage_count,
+      temperature_c=temperature_c,
+      voltage_mv=voltage_mv,
+  )
+  line_protocol_queue.put(data_point.to_line_protocol())
 
-    since_last_update_ns = sensor.set_is_contact(is_contact)
-    sensor.event.set()
-    sensor_status = ', '.join([str(sensor) for sensor in _SENSORS.values()])
-    logging.info(f'Sensor status: {sensor_status}')
 
-    line_protocol_queue.put(
-        ContactSensorTimestamp(
-            battery_percent=battery_percent,
-            is_contact=is_contact,
-            link_quality=link_quality,
-            position=sensor.position,
-            power_outage_count=power_outage_count,
-            since_last_update_ns=since_last_update_ns,
-            temperature_c=temperature_c,
-            voltage_mv=voltage_mv,
-        ).to_line_protocol())
-    return
+def _process_message(message: asyncio_mqtt.Message, line_protocol_queue: Queue[str]) -> None:
+  _update_sensor(message)
+  _put_sensor_data_point(message, line_protocol_queue)
 
-  logging.error(f'No sensor matched topic "{topic}".')
+
+def _process_flags() -> None:
+  if not len(Position) == len(_CONTACT_SENSOR_MQTT_TOPICS.value) == len(
+      _CONTACT_SENSOR_NICK_NAMES.value) == len(_CONTACT_SENSOR_POSITIONS.value) == len(
+          _CONTACT_SENSOR_INITIAL_STATES.value):
+    raise ValueError('Length of flags contact_sensor_* are not the same. '
+                     f'The length should equal to {len(Position)}.')
+
+  for i, mqtt_topic in enumerate(_CONTACT_SENSOR_MQTT_TOPICS.value):
+    nick_name: str = _CONTACT_SENSOR_NICK_NAMES.value[i]
+    position: Position = _CONTACT_SENSOR_POSITIONS.value[i]
+
+    contact_sensor = _ContactSensor(
+        mqtt_topic=mqtt_topic,
+        position=position,
+        nick_name=nick_name,
+    )
+
+    initial_state: int = _CONTACT_SENSOR_INITIAL_STATES.value[i]
+    if initial_state != -1:
+      contact_sensor.set_is_contact(bool(initial_state))
+
+    _CONTACT_SENSORS[mqtt_topic] = contact_sensor
+    _CONTACT_SENSORS[position] = contact_sensor
 
 
 def get_message_processors(
     line_protocol_queue: Queue[str]) -> dict[str, Callable[[asyncio_mqtt.Message], None]]:
-  if len(_CONTACT_SENSOR_TOPICS.value) != len(Position):
-    raise ValueError(f'Expected {len(Position)} MQTT topics, '
-                     f'got {len(_CONTACT_SENSOR_TOPICS.value)} instead.')
-
-  if _CONTACT_SENSOR_INITIAL_STATES.value is not None:
-    if len(_CONTACT_SENSOR_INITIAL_STATES.value) != len(Position):
-      raise ValueError()
-
-    for i, state in enumerate(_CONTACT_SENSOR_INITIAL_STATES.value):
-      _SENSORS[Position(i)].set_is_contact(state != 0)
-    logging.debug([sensor.is_contact for sensor in _SENSORS.values()])
-
-  topic: str
-  for i, topic in enumerate(_CONTACT_SENSOR_TOPICS.value):
-    _SENSORS[Position(i)].topic = topic
-
+  _process_flags()
   process_message = lambda message: _process_message(message, line_protocol_queue)
-  return {topic: process_message for topic in _CONTACT_SENSOR_TOPICS.value}
+  return {topic: process_message for topic in _CONTACT_SENSOR_MQTT_TOPICS.value}
 
 
-def where() -> Position | None:
-  for position in Position:
-    if at(position):
-      return position
-  return None
+def at(position: Position) -> bool:
+  return _CONTACT_SENSORS[position].get_is_contact() == True
 
 
-def at(position: Position, mock: bool = False) -> bool:
-  return mock or _SENSORS[position].is_contact == True
+def expect_at(position: Position) -> None:
+  assert at(position), f'Expected door to be at {position.name}.'
 
 
-def expect_at(position: Position, mock: bool = False) -> None:
-  assert at(position, mock), f'Expected door to be at {position.name}.'
+def expect_not_at(position: Position) -> None:
+  assert not at(position), f'Expected door to not be at {position.name}.'
 
 
-def expect_not_at(position: Position, mock: bool = False) -> None:
-  assert not at(position, mock), f'Expected door to not be at {position.name}.'
-
-
-async def _enter(position: Position, timeout_s: float, mock: bool = False) -> bool:
-  if mock:
-    logging.info(f'Mock entering {position.name} after {timeout_s/2}s.')
-    await asyncio.sleep(timeout_s / 2)
-    return True
-
+async def _enter(position: Position, timeout_s: float) -> bool:
   if at(position):
     logging.error(f'Door already at {position.name}.')
     return False
 
-  sensor = _SENSORS[position]
+  sensor = _CONTACT_SENSORS[position]
   sensor.event.clear()
   logging.info(f'Waiting for door to enter {position.name} within {timeout_s}s.')
 
   try:
     await asyncio.wait_for(sensor.event.wait(), timeout_s)
   except TimeoutError:
-    logging.error(f'Expected sensor at {position.name} to trigger within {timeout_s}s.'
+    logging.error(f'Expected sensor at {position.name} to trigger within {timeout_s}s, '
                   'but it has not.')
     return False
 
@@ -246,27 +261,12 @@ async def _enter(position: Position, timeout_s: float, mock: bool = False) -> bo
   return True
 
 
-async def expect_enter(
-    position: Position,
-    timeout_s: float | None = None,
-    mock: bool = False,
-) -> None:
-  if timeout_s is None:
-    timeout_s = float(_EXPECT_ENTER_MAX_SECONDS.value)
-  assert await _enter(position, timeout_s, mock), f'Door did not enter {position.name}.'
-
-
-async def _exit(position: Position, timeout_s: float, mock: bool = False) -> bool:
-  if mock:
-    logging.info(f'Mock exiting {position.name} after {timeout_s/2}s.')
-    await asyncio.sleep(timeout_s / 2)
-    return True
-
+async def _exit(position: Position, timeout_s: float) -> bool:
   if not at(position):
     logging.error(f'Door not already at {position.name}.')
     return False
 
-  sensor = _SENSORS[position]
+  sensor = _CONTACT_SENSORS[position]
   sensor.event.clear()
   logging.info(f'Waiting for door to exit {position.name} within {timeout_s}s.')
 
@@ -286,11 +286,20 @@ async def _exit(position: Position, timeout_s: float, mock: bool = False) -> boo
   return True
 
 
-async def expect_exit(
-    position: Position,
-    timeout_s: float | None = None,
-    mock: bool = False,
-) -> None:
+async def expect_enter(position: Position, timeout_s: float | None = None) -> None:
+  if timeout_s is None:
+    timeout_s = float(_EXPECT_ENTER_MAX_SECONDS.value)
+  assert await _enter(position, timeout_s), f'Door did not enter {position.name}.'
+
+
+async def expect_exit(position: Position, timeout_s: float | None = None) -> None:
   if timeout_s is None:
     timeout_s = float(_EXPECT_EXIT_MAX_SECONDS.value)
-  assert await _exit(position, timeout_s, mock), f'Door did not exit {position.name}.'
+  assert await _exit(position, timeout_s), f'Door did not exit {position.name}.'
+
+
+def where() -> Position | None:
+  for position in Position:
+    if at(position):
+      return position
+  return None

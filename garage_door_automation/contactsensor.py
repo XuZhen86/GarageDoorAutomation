@@ -132,8 +132,12 @@ class _ContactSensorDataPoint:
         .tag('position', self._contact_sensor.position.name)
         .tag('mqtt_topic', self._contact_sensor.mqtt_topic)
         .tag('nick_name', self._contact_sensor.nick_name)
+        .field('is_contact', self._contact_sensor._is_contact)
         .time(time_ns))  # type: ignore
     # yapf: enable
+
+    if (last_updated_ns := self._contact_sensor.last_updated_ns) is not None:
+      point.field('last_updated_ns', last_updated_ns)
 
     for key, value in asdict(self).items():
       if not key.startswith('_') and value is not None:

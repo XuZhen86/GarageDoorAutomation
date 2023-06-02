@@ -86,6 +86,7 @@ class _ContactSensor:
   def set_is_contact(self, is_contact: bool) -> None:
     self._is_contact = is_contact
     self.last_updated_ns = time.time_ns()
+    self.event.set()
 
   def get_is_contact(self) -> bool | None:
     return self._is_contact

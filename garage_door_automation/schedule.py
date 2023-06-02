@@ -1,11 +1,10 @@
 import asyncio
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, asdict
 from datetime import datetime, timedelta, timezone
 from decimal import Decimal
 from enum import StrEnum
 from queue import Queue
-from typing import Literal
 
 import pytz
 from absl import flags, logging
@@ -35,6 +34,7 @@ _LOCAL_TIMEZONE_NAME = flags.DEFINE_enum(
     enum_values=_TIMEZONE_FINDER.timezone_names,
     help='Manually override local timezone name.',
 )
+
 _SUNRISE_HOUR = flags.DEFINE_integer(
     name='sunrise_hour',
     default=None,
@@ -45,12 +45,21 @@ _SUNRISE_HOUR = flags.DEFINE_integer(
 )
 _SUNRISE_MINUTE = flags.DEFINE_integer(
     name='sunrise_minute',
-    default=0,
+    default=None,
     required=False,
     lower_bound=0,
     upper_bound=59,
     help='Manually override sunrise minute instead of calculating it from the current location.',
 )
+_SUNRISE_OFFSET_MINUTES = flags.DEFINE_integer(
+    name='sunrise_offset_minutes',
+    default=0,
+    required=False,
+    lower_bound=-4 * 60,
+    upper_bound=4 * 60,
+    help='Advance or delay in minutes when the sunrise event is fired.',
+)
+
 _SUNSET_HOUR = flags.DEFINE_integer(
     name='sunset_hour',
     default=None,
@@ -61,20 +70,11 @@ _SUNSET_HOUR = flags.DEFINE_integer(
 )
 _SUNSET_MINUTE = flags.DEFINE_integer(
     name='sunset_minute',
-    default=0,
+    default=None,
     required=False,
     lower_bound=0,
     upper_bound=59,
     help='Manually override sunset minute instead of calculating it from the current location.',
-)
-
-_SUNRISE_OFFSET_MINUTES = flags.DEFINE_integer(
-    name='sunrise_offset_minutes',
-    default=0,
-    required=False,
-    lower_bound=-4 * 60,
-    upper_bound=4 * 60,
-    help='Advance or delay in minutes when the sunrise event is fired.',
 )
 _SUNSET_OFFSET_MINUTES = flags.DEFINE_integer(
     name='sunset_offset_minutes',
@@ -86,36 +86,37 @@ _SUNSET_OFFSET_MINUTES = flags.DEFINE_integer(
 )
 
 
-class ScheduleTimestampName(StrEnum):
+class _ScheduleDataPointType(StrEnum):
   SUNRISE = 'sunrise'
   SUNSET = 'sunset'
 
 
-@dataclass
-class SunScheduleTimestamp:
-  name: Literal[ScheduleTimestampName.SUNRISE] | Literal[ScheduleTimestampName.SUNSET]
-  latitude: float
-  longitude: float
-  local_timezone_name: str | None
-  is_manual_timezone: bool
-  offset_minutes: int
-  timestamp_ns: int  # For the timestamp of the scheduled event.
-  time_ns: int = field(default_factory=time.time_ns)  # For when the timestamp was calculated.
+@dataclass(frozen=True)
+class _ScheduleDataPoint:
+  _type: _ScheduleDataPointType
 
-  def to_line_protocol(self) -> str:
-    # yapf: disable
-    return (Point
-        .measurement('schedule')
-        .tag('name', self.name.value)
-        .tag('local_timezone_name', self.local_timezone_name if self.local_timezone_name is not None else '')
-        .tag('is_manual_timezone', self.is_manual_timezone)
-        .field('latitude', self.latitude)
-        .field('longitude', self.longitude)
-        .field('offset_minutes', self.offset_minutes)
-        .field('timestamp_ns', self.timestamp_ns)
-        .time(self.time_ns)  # type: ignore
-        .to_line_protocol())
-    # yapf: enable
+  latitude: float
+  local_timezone_name: str | None
+  longitude: float
+  sunrise_hour: int | None
+  sunrise_minute: int | None
+  sunrise_offset_minutes: int
+  sunset_hour: int | None
+  sunset_minute: int | None
+  sunset_offset_minutes: int
+  timestamp_ns: int  # Timestamp of the scheduled event.
+
+  def to_line_protocol(self, time_ns: int | None = None) -> str:
+    point = Point('schedule').time(
+        time_ns if time_ns is not None else time.time_ns())  # type: ignore
+
+    for key, value in asdict(self).items():
+      if key.startswith('_'):
+        point.tag(key[1:], value)
+      else:
+        point.field(key, value)
+
+    return point.to_line_protocol()
 
 
 def _local_timezone():
@@ -131,8 +132,12 @@ def _local_timezone():
 
 def _sunrise_time(now: datetime) -> datetime:
   sunrise_time = Sun(_LATITUDE.value, _LONGITUDE.value).get_sunrise_time()
+
   if _SUNRISE_HOUR.present:
-    sunrise_time.replace(hour=_SUNRISE_HOUR.value, minute=_SUNRISE_MINUTE.value)
+    sunrise_time.replace(hour=_SUNRISE_HOUR.value)
+  if _SUNRISE_MINUTE.present:
+    sunrise_time.replace(minute=_SUNRISE_MINUTE.value)
+
   if sunrise_time < now:
     sunrise_time += timedelta(days=1)
   return sunrise_time
@@ -147,8 +152,12 @@ def _sunrise_time_with_offset(now: datetime, sunrise_time: datetime) -> datetime
 
 def _sunset_time(now: datetime) -> datetime:
   sunset_time = Sun(_LATITUDE.value, _LONGITUDE.value).get_sunset_time()
+
   if _SUNSET_HOUR.present:
-    sunset_time.replace(hour=_SUNSET_HOUR.value, minute=_SUNSET_MINUTE.value)
+    sunset_time.replace(hour=_SUNSET_HOUR.value)
+  if _SUNSET_MINUTE.present:
+    sunset_time.replace(minute=_SUNSET_MINUTE.value)
+
   if sunset_time < now:
     sunset_time += timedelta(days=1)
   return sunset_time
@@ -178,19 +187,24 @@ async def set_event_at_sunrise(event: asyncio.Event, line_protocol_queue: Queue[
     logging.info(f'Sleeping for {seconds_till_sunrise}s ({time_till_sunrise}) until sunrise.')
 
     line_protocol_queue.put(
-        SunScheduleTimestamp(
-            name=ScheduleTimestampName.SUNRISE,
+        _ScheduleDataPoint(
+            _type=_ScheduleDataPointType.SUNRISE,
             latitude=_LATITUDE.value,
-            longitude=_LONGITUDE.value,
             local_timezone_name=local_timezone.zone if local_timezone is not None else None,
-            is_manual_timezone=_LOCAL_TIMEZONE_NAME.present,
-            offset_minutes=_SUNRISE_OFFSET_MINUTES.value,
+            longitude=_LONGITUDE.value,
+            sunrise_hour=_SUNRISE_HOUR.value,
+            sunrise_minute=_SUNRISE_MINUTE.value,
+            sunrise_offset_minutes=_SUNRISE_OFFSET_MINUTES.value,
+            sunset_hour=_SUNSET_HOUR.value,
+            sunset_minute=_SUNSET_MINUTE.value,
+            sunset_offset_minutes=_SUNSET_OFFSET_MINUTES.value,
             timestamp_ns=int(Decimal(sunrise_time_with_offset.timestamp()) * (10**9)),
         ).to_line_protocol())
 
     await asyncio.sleep(seconds_till_sunrise)
+
+    logging.info('Setting sunrise event.')
     event.set()
-    logging.info('Sunrise event was set.')
 
     # suntime's calculation can be tricky, like the next sunrise/sunset is within 1 minute.
     # Forcing a cooldown to avoid this issue.
@@ -215,19 +229,24 @@ async def set_event_at_sunset(event: asyncio.Event, line_protocol_queue: Queue[s
     logging.info(f'Sleeping for {seconds_till_sunset}s ({time_till_sunset}) until sunset.')
 
     line_protocol_queue.put(
-        SunScheduleTimestamp(
-            name=ScheduleTimestampName.SUNSET,
+        _ScheduleDataPoint(
+            _type=_ScheduleDataPointType.SUNSET,
             latitude=_LATITUDE.value,
-            longitude=_LONGITUDE.value,
             local_timezone_name=local_timezone.zone if local_timezone is not None else None,
-            is_manual_timezone=_LOCAL_TIMEZONE_NAME.present,
-            offset_minutes=_SUNSET_OFFSET_MINUTES.value,
+            longitude=_LONGITUDE.value,
+            sunrise_hour=_SUNRISE_HOUR.value,
+            sunrise_minute=_SUNRISE_MINUTE.value,
+            sunrise_offset_minutes=_SUNRISE_OFFSET_MINUTES.value,
+            sunset_hour=_SUNSET_HOUR.value,
+            sunset_minute=_SUNSET_MINUTE.value,
+            sunset_offset_minutes=_SUNSET_OFFSET_MINUTES.value,
             timestamp_ns=int(Decimal(sunset_time_with_offset.timestamp()) * (10**9)),
         ).to_line_protocol())
 
     await asyncio.sleep(seconds_till_sunset)
+
+    logging.info('Setting sunset event.')
     event.set()
-    logging.info('Sunset event was set.')
 
     # suntime's calculation can be tricky, like the next sunrise/sunset is within 1 minute.
     # Forcing a cooldown to avoid this issue.

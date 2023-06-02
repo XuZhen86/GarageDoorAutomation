@@ -73,7 +73,7 @@ async def main(args: list[str]) -> None:
 
 
 def app_run_main() -> None:
-  app.run(lambda args: asyncio.run(main(args)))
+  app.run(lambda args: asyncio.run(main(args), debug=True))
 
 
 # garage-door-automation --flagfile=data/flags.txt

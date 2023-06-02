@@ -83,19 +83,15 @@ class MotionSensorDataPoint:
   temperature_c_1000x: int | None = None
 
   def to_line_protocol(self, time_ns: int | None = None) -> str:
-    if time_ns is None:
-      time_ns = time.time_ns()
-
-    # yapf: disable
-    point = (Point('motion_sensor')
-        .tag('nick_name', self._nick_name)
-        .tag('mqtt_topic', self._mqtt_topic)
-        .time(time_ns))  # type: ignore
-    # yapf: enable
+    point = Point('motion_sensor').time(
+        time_ns if time_ns is not None else time.time_ns())  # type: ignore
 
     for key, value in asdict(self).items():
-      if not key.startswith('_') and value is not None:
+      if key.startswith('_'):
+        point.tag(key, value)
+      else:
         point.field(key, value)
+
     return point.to_line_protocol()
 
 

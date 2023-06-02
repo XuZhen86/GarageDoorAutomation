@@ -118,33 +118,28 @@ _CONTACT_SENSORS: dict[str | Position, _ContactSensor] = dict()
 
 @dataclass(frozen=True)
 class _ContactSensorDataPoint:
-  _contact_sensor: _ContactSensor
+  _position: Position
+  _mqtt_topic: str
+  _nick_name: str
 
   battery_percent: int
+  is_contact: bool
+  last_updated_ns: int | None
   link_quality: int
   power_outage_count: int
   temperature_c: int
   voltage_mv: int
 
   def to_line_protocol(self, time_ns: int | None = None) -> str:
-    if time_ns is None:
-      time_ns = time.time_ns()
-
-    # yapf: disable
-    point = (Point('contact_sensor')
-        .tag('position', self._contact_sensor.position.name)
-        .tag('mqtt_topic', self._contact_sensor.mqtt_topic)
-        .tag('nick_name', self._contact_sensor.nick_name)
-        .field('is_contact', self._contact_sensor._is_contact)
-        .time(time_ns))  # type: ignore
-    # yapf: enable
-
-    if (last_updated_ns := self._contact_sensor.last_updated_ns) is not None:
-      point.field('last_updated_ns', last_updated_ns)
+    point = Point('contact_sensor').time(
+        time_ns if time_ns is not None else time.time_ns())  # type: ignore
 
     for key, value in asdict(self).items():
-      if not key.startswith('_') and value is not None:
+      if key.startswith('_'):
+        point.tag(key, value)
+      else:
         point.field(key, value)
+
     return point.to_line_protocol()
 
 
@@ -175,6 +170,7 @@ def _put_sensor_data_point(message: asyncio_mqtt.Message, line_protocol_queue: Q
   try:
     payload = parse_payload(message)
     battery_percent: int = get_value(payload, 'battery', int)
+    is_contact: bool = get_value(payload, 'contact', bool)
     link_quality: int = get_value(payload, 'linkquality', int)
     power_outage_count: int = get_value(payload, 'power_outage_count', int)
     temperature_c: int = get_value(payload, 'device_temperature', int)
@@ -184,8 +180,12 @@ def _put_sensor_data_point(message: asyncio_mqtt.Message, line_protocol_queue: Q
     return
 
   data_point = _ContactSensorDataPoint(
-      _contact_sensor=contact_sensor,
+      _position=contact_sensor.position,
+      _mqtt_topic=contact_sensor.mqtt_topic,
+      _nick_name=contact_sensor.nick_name,
       battery_percent=battery_percent,
+      is_contact=is_contact,
+      last_updated_ns=contact_sensor.last_updated_ns,
       link_quality=link_quality,
       power_outage_count=power_outage_count,
       temperature_c=temperature_c,

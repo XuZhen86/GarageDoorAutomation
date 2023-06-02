@@ -88,7 +88,7 @@ class MotionSensorDataPoint:
 
     for key, value in asdict(self).items():
       if key.startswith('_'):
-        point.tag(key, value)
+        point.tag(key[1:], value)
       else:
         point.field(key, value)
 

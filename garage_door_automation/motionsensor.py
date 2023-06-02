@@ -44,17 +44,17 @@ _MOTION_SENSOR_VACANCY_WEBHOOKS = flags.DEFINE_multi_string(
 
 
 @dataclass(frozen=True)
-class MotionSensor:
+class _MotionSensor:
   mqtt_topic: str
   nick_name: str
   occupancy_webhook: str | None = None
   vacancy_webhook: str | None = None
 
 
-_MOTION_SENSORS: dict[str, MotionSensor] = dict()
+_MOTION_SENSORS: dict[str, _MotionSensor] = dict()
 
 
-class MotionSensitivity(StrEnum):
+class _MotionSensitivity(StrEnum):
   LOW = 'low'
   MEDIUM = 'medium'
   HIGH = 'high'
@@ -63,7 +63,7 @@ class MotionSensitivity(StrEnum):
 
 
 @dataclass(frozen=True)
-class MotionSensorDataPoint:
+class _MotionSensorDataPoint:
   _nick_name: str
   _mqtt_topic: str
 
@@ -78,7 +78,7 @@ class MotionSensorDataPoint:
   has_led_indication: bool | None = None
   illuminance: int | None = None
   illuminance_lux: int | None = None
-  motion_sensitivity: MotionSensitivity | None = None
+  motion_sensitivity: _MotionSensitivity | None = None
   occupancy_timeout_s: int | None = None
   temperature_c_1000x: int | None = None
 
@@ -131,11 +131,11 @@ def _put_sensor_data_point(message: asyncio_mqtt.Message, line_protocol_queue: Q
     logging.error(e)
     return
 
-  motion_sensitivity = MotionSensitivity(
+  motion_sensitivity = _MotionSensitivity(
       motion_sensitivity_str) if motion_sensitivity_str is not None else None
   temperature_c_1000x = int(Decimal(temperature_c) * 1000) if temperature_c is not None else None
 
-  data_point = MotionSensorDataPoint(
+  data_point = _MotionSensorDataPoint(
       _mqtt_topic=topic,
       _nick_name=_MOTION_SENSORS[topic].nick_name,
       battery_percent=battery_percent,
@@ -196,7 +196,7 @@ def _process_flags() -> None:
     vacancy_webhook = (str(_MOTION_SENSOR_VACANCY_WEBHOOKS.value[i])
                        if _MOTION_SENSOR_VACANCY_WEBHOOKS.value[i] != '-' else None)
 
-    motion_sensor = MotionSensor(
+    motion_sensor = _MotionSensor(
         mqtt_topic=mqtt_topic,
         nick_name=nick_name,
         occupancy_webhook=occupancy_webhook,

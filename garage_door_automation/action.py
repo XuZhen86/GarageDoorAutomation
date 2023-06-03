@@ -2,7 +2,6 @@ import asyncio
 
 import asyncio_mqtt
 from absl import flags, logging
-import time
 from garage_door_automation.contactsensor import (Position, at, expect_at, expect_enter,
                                                   expect_exit, expect_not_at, where)
 from garage_door_automation.switch import trigger
@@ -39,7 +38,7 @@ async def to_slightly_opened(client: asyncio_mqtt.Client) -> None:
   await trigger(client)
   await expect_exit(current_position)
 
-  timeout_s = _FULLY_CLOSED_TO_SLIGHTLY_OPENED_TIMEOUT_SECONDS.value
+  timeout_s: float = _FULLY_CLOSED_TO_SLIGHTLY_OPENED_TIMEOUT_SECONDS.value
   try:
     async with asyncio.timeout(timeout_s):
       await expect_enter(Position.SLIGHTLY_OPENED)

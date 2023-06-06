@@ -10,7 +10,7 @@ setuptools.setup(
     install_requires=[
         'absl-py==1.4.0',
         'asyncio-mqtt==0.16.1',
-        'line_protocol_cache@git+https://github.com/XuZhen86/LineProtocolCache@e4e41da436e97fec68c297bca3ea392d5b47b68c',
+        'line_protocol_cache@git+https://github.com/XuZhen86/LineProtocolCache@8a9f994',
         'pytz==2023.3',
         'requests==2.31.0',
         'suntime==1.2.5',

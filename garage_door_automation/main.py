@@ -35,8 +35,6 @@ async def put_line_protocols(line_protocol_queue: Queue[str],
     try:
       line_protocols.append(line_protocol_queue.get(block=False))
     except Empty:
-      for line_protocol in line_protocols:
-        logging.info(f'Putting "{line_protocol}".')
       await producer.put(line_protocols)
       line_protocols.clear()
       await asyncio.sleep(2)

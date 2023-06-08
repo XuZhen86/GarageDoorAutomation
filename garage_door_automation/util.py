@@ -32,7 +32,7 @@ def get_value(payload: dict[str, Any], key: str, expected_class: type):
   return value
 
 
-def get_value_or_none(payload: dict[str, Any], key: str, expected_class: type):
+def get_value_or_none(payload: dict[str, Any], key: str, expected_class):
   value = payload.get(key)
 
   if value is not None and not isinstance(value, expected_class):

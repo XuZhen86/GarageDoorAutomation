@@ -126,9 +126,10 @@ def _put_sensor_data_point(message: asyncio_mqtt.Message, line_protocol_queue: Q
     illuminance_lux: int | None = get_value_or_none(payload, 'illuminance_lux', int)
     motion_sensitivity_str: str | None = get_value_or_none(payload, 'motion_sensitivity', str)
     occupancy_timeout_s: int | None = get_value_or_none(payload, 'occupancy_timeout', int)
-    temperature_c: int | None = get_value_or_none(payload, 'temperature', float)
+    temperature_c: int | float | None = get_value_or_none(payload, 'temperature', (int, float))
   except ValueError as e:
     logging.error(e)
+    logging.error(payload)
     return
 
   motion_sensitivity = _MotionSensitivity(

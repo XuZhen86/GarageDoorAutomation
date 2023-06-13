@@ -30,6 +30,7 @@ class Position(Enum):
   FULLY_CLOSED = auto()
   SLIGHTLY_OPENED = auto()
   FULLY_OPENED = auto()
+  BACK_YARD_DOOR = auto()
 
 
 _CONTACT_SENSOR_POSITIONS = flags.DEFINE_multi_enum_class(

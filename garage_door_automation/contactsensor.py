@@ -6,6 +6,7 @@ from queue import Queue
 from typing import Callable
 
 import asyncio_mqtt
+import requests
 from absl import flags, logging
 from influxdb_client import Point
 
@@ -23,6 +24,22 @@ _CONTACT_SENSOR_NICK_NAMES = flags.DEFINE_multi_string(
     default=None,
     required=True,
     help='Specify the nick names for the contact sensors.',
+)
+
+_CONTACT_SENSOR_CLOSED_WEBHOOKS = flags.DEFINE_multi_string(
+    name='contact_sensor_closed_webhooks',
+    default=None,
+    required=True,
+    help='Specify the webhooks to invoke when sensor is contacted. '
+    'Use "-" if webhook for that sensor is disabled.',
+)
+
+_CONTACT_SENSOR_OPENED_WEBHOOKS = flags.DEFINE_multi_string(
+    name='contact_sensor_opened_webhooks',
+    default=None,
+    required=True,
+    help='Specify the webhooks to invoke when sensor is not contacted. '
+    'Use "-" if webhook for that sensor is disabled.',
 )
 
 
@@ -78,6 +95,8 @@ class _ContactSensor:
   mqtt_topic: str
   nick_name: str
   _is_contact: bool = False
+  closed_webhook: str | None = None
+  opened_webhook: str | None = None
 
   # field() is needed to ensure a new Event is created for each ContactSensor instance.
   # Otherwise it would refer to the same Event instance.
@@ -196,26 +215,69 @@ def _put_sensor_data_point(message: asyncio_mqtt.Message, line_protocol_queue: Q
   line_protocol_queue.put(data_point.to_line_protocol())
 
 
+def _invoke_webhooks(message: asyncio_mqtt.Message) -> None:
+  topic = message.topic.value
+  contact_sensor = _CONTACT_SENSORS.get(topic)
+  if contact_sensor is None:
+    logging.error(f'Unknown MQTT topic: {topic}')
+    return
+
+  try:
+    payload = parse_payload(message)
+    is_contact: bool = get_value(payload, 'contact', bool)
+  except ValueError as e:
+    logging.error(e)
+    return
+
+  webhook_url = contact_sensor.closed_webhook if is_contact else contact_sensor.opened_webhook
+  if webhook_url is None:
+    return
+
+  response = requests.get(webhook_url, timeout=10)
+  if response.status_code != 200:
+    logging.error(f'Webhook invocation failed for motion sensor {contact_sensor.nick_name}, '
+                  f'is_contact={is_contact}, '
+                  f'status_code={response.status_code}.')
+
+
 def _process_message(message: asyncio_mqtt.Message, line_protocol_queue: Queue[str]) -> None:
   _update_sensor(message)
   _put_sensor_data_point(message, line_protocol_queue)
+  _invoke_webhooks(message)
 
 
 def _process_flags() -> None:
-  if not len(Position) == len(_CONTACT_SENSOR_MQTT_TOPICS.value) == len(
+  if not (len(Position) == len(_CONTACT_SENSOR_MQTT_TOPICS.value) == len(
       _CONTACT_SENSOR_NICK_NAMES.value) == len(_CONTACT_SENSOR_POSITIONS.value) == len(
-          _CONTACT_SENSOR_INITIAL_STATES.value):
-    raise ValueError('Length of flags contact_sensor_* are not the same. '
-                     f'The length should equal to {len(Position)}.')
+          _CONTACT_SENSOR_INITIAL_STATES.value) == len(_CONTACT_SENSOR_CLOSED_WEBHOOKS.value) ==
+          len(_CONTACT_SENSOR_OPENED_WEBHOOKS.value)):
+    e = ValueError('Length of flags contact_sensor_* are not the same. '
+                   f'The length should equal to {len(Position)}.')
+    e.add_note(f'len(_CONTACT_SENSOR_MQTT_TOPICS.value)={len(_CONTACT_SENSOR_MQTT_TOPICS.value)}')
+    e.add_note(f'len(_CONTACT_SENSOR_NICK_NAMES.value)={len(_CONTACT_SENSOR_NICK_NAMES.value)}')
+    e.add_note(f'len(_CONTACT_SENSOR_POSITIONS.value)={len(_CONTACT_SENSOR_POSITIONS.value)}')
+    e.add_note(
+        f'len(_CONTACT_SENSOR_INITIAL_STATES.value)={len(_CONTACT_SENSOR_INITIAL_STATES.value)}')
+    e.add_note(
+        f'len(_CONTACT_SENSOR_CLOSED_WEBHOOKS.value)={len(_CONTACT_SENSOR_CLOSED_WEBHOOKS.value)}')
+    e.add_note(
+        f'len(_CONTACT_SENSOR_OPENED_WEBHOOKS.value)={len(_CONTACT_SENSOR_OPENED_WEBHOOKS.value)}')
+    raise e
 
   for i, mqtt_topic in enumerate(_CONTACT_SENSOR_MQTT_TOPICS.value):
     nick_name: str = _CONTACT_SENSOR_NICK_NAMES.value[i]
     position: Position = _CONTACT_SENSOR_POSITIONS.value[i]
+    closed_webhook = (str(_CONTACT_SENSOR_CLOSED_WEBHOOKS.value[i])
+                      if _CONTACT_SENSOR_CLOSED_WEBHOOKS.value[i] != '-' else None)
+    opened_webhook = (str(_CONTACT_SENSOR_OPENED_WEBHOOKS.value[i])
+                      if _CONTACT_SENSOR_OPENED_WEBHOOKS.value[i] != '-' else None)
 
     contact_sensor = _ContactSensor(
         mqtt_topic=mqtt_topic,
         position=position,
         nick_name=nick_name,
+        closed_webhook=closed_webhook,
+        opened_webhook=opened_webhook,
     )
 
     initial_state: int = _CONTACT_SENSOR_INITIAL_STATES.value[i]

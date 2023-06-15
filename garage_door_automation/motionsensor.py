@@ -129,7 +129,6 @@ def _put_sensor_data_point(message: asyncio_mqtt.Message, line_protocol_queue: Q
     temperature_c: int | float | None = get_value_or_none(payload, 'temperature', (int, float))
   except ValueError as e:
     logging.error(e)
-    logging.error(payload)
     return
 
   motion_sensitivity = _MotionSensitivity(
@@ -188,7 +187,15 @@ def _process_message(message: asyncio_mqtt.Message, line_protocol_queue: Queue[s
 def _process_flags() -> None:
   if len(_MOTION_SENSOR_MQTT_TOPICS.value) != len(_MOTION_SENSOR_NICK_NAMES.value) != len(
       _MOTION_SENSOR_OCCUPANCY_WEBHOOKS.value) != len(_MOTION_SENSOR_VACANCY_WEBHOOKS.value):
-    raise ValueError('Length of flags motion_sensor_* are not the same.')
+    e = ValueError('Length of flags motion_sensor_* are not the same.')
+    e.add_note(f'len(_MOTION_SENSOR_MQTT_TOPICS.value)={len(_MOTION_SENSOR_MQTT_TOPICS.value)}')
+    e.add_note(f'len(_MOTION_SENSOR_NICK_NAMES.value)={len(_MOTION_SENSOR_NICK_NAMES.value)}')
+    e.add_note(
+        f'len(_MOTION_SENSOR_OCCUPANCY_WEBHOOKS.value)={len(_MOTION_SENSOR_OCCUPANCY_WEBHOOKS.value)}'
+    )
+    e.add_note(
+        f'len(_MOTION_SENSOR_VACANCY_WEBHOOKS.value)={len(_MOTION_SENSOR_VACANCY_WEBHOOKS.value)}')
+    raise e
 
   for i, mqtt_topic in enumerate(_MOTION_SENSOR_MQTT_TOPICS.value):
     nick_name: str = _MOTION_SENSOR_NICK_NAMES.value[i]

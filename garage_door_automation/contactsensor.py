@@ -369,8 +369,14 @@ async def expect_exit(position: Position, timeout_s: float | None = None) -> Non
   assert await _exit(position, timeout_s), f'Door did not exit {position.name}.'
 
 
-def where() -> Position | None:
-  for position in Position:
+def where(
+    positions_to_check: list[Position] = [
+        Position.FULLY_CLOSED,
+        Position.SLIGHTLY_OPENED,
+        Position.FULLY_OPENED,
+    ]
+) -> Position | None:
+  for position in positions_to_check:
     if at(position):
       return position
   return None

@@ -1,13 +1,14 @@
 import asyncio
-from queue import Queue, Empty
+import aioconsole
+from queue import Empty, Queue
 
 import asyncio_mqtt
 from absl import app, logging
 from line_protocol_cache.asyncproducer import AsyncLineProtocolCacheProducer
 
-from garage_door_automation.action import to_fully_closed, to_slightly_opened
-from garage_door_automation.mqtt import (create_mqtt_client, process_message_loop, subscribe)
-from garage_door_automation.schedule import (set_event_at_sunrise, set_event_at_sunset)
+from garage_door_automation.action.action import to_fully_closed, to_fully_opened, to_slightly_opened
+from garage_door_automation.mqtt.mqtt import create_mqtt_client, process_message_loop, subscribe
+from garage_door_automation.schedule.schedule import set_event_at_sunrise, set_event_at_sunset
 
 
 async def fully_close_at_sunrise(sunrise_event: asyncio.Event, client: asyncio_mqtt.Client) -> None:
@@ -40,18 +41,49 @@ async def put_line_protocols(line_protocol_queue: Queue[str],
       await asyncio.sleep(2)
 
 
+async def main_interactive(args: list[str]) -> None:
+  async with create_mqtt_client() as client:
+    line_protocol_queue: Queue[str] = Queue()
+    await subscribe(client)
+
+    async def call_actions() -> None:
+      while True:
+        action = await aioconsole.ainput('action: ')
+        print(f'{action=}')
+        if action == 'to_fully_closed':
+          await to_fully_closed(client)
+        elif action == 'to_slightly_opened':
+          await to_slightly_opened(client)
+        elif action == 'to_fully_opened':
+          await to_fully_opened(client)
+        else:
+          break
+
+    tasks = [
+        asyncio.create_task(process_message_loop(client, line_protocol_queue),
+                            name='process_message_loop()'),
+        asyncio.create_task(call_actions(), name='call_actions()'),
+    ]
+    done_tasks, pending_tasks = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+
+    for task in pending_tasks:
+      task.cancel()
+    await asyncio.wait(tasks)
+
+
 async def main(args: list[str]) -> None:
   logging.get_absl_handler().use_absl_log_file()  # type: ignore
 
   async with create_mqtt_client() as client, AsyncLineProtocolCacheProducer() as producer:
     line_protocol_queue: Queue[str] = Queue()
-    await subscribe(client, line_protocol_queue)
+    await subscribe(client)
 
     sunrise_event = asyncio.Event()
     sunset_event = asyncio.Event()
 
     tasks = [
-        asyncio.create_task(process_message_loop(client), name='process_message_loop()'),
+        asyncio.create_task(process_message_loop(client, line_protocol_queue),
+                            name='process_message_loop()'),
         asyncio.create_task(set_event_at_sunrise(sunrise_event, line_protocol_queue),
                             name='set_event_at_sunrise()'),
         asyncio.create_task(set_event_at_sunset(sunset_event, line_protocol_queue),
@@ -70,8 +102,15 @@ async def main(args: list[str]) -> None:
     await asyncio.wait(tasks)
 
 
+async def dispatch_main(args: list[str]) -> None:
+  if len(args) == 2 and args[1] == 'interactive':
+    await main_interactive(args)
+    return
+  await main(args)
+
+
 def app_run_main() -> None:
-  app.run(lambda args: asyncio.run(main(args), debug=True))
+  app.run(lambda args: asyncio.run(dispatch_main(args), debug=True))
 
 
 # garage-door-automation --flagfile=data/flags.txt

@@ -7,18 +7,9 @@
   "customizations": {
     "vscode": {
       "extensions": [
-        "ms-python.python"
-      ],
-      "settings": {
-        "python.formatting.provider": "yapf",
-        "python.formatting.yapfPath": "/usr/local/bin/yapf",
-        "python.formatting.yapfArgs": [
-          "--style",
-          "{based_on_style: pep8, COLUMN_LIMIT: 100, INDENT_WIDTH: 2}"
-        ],
-        "python.analysis.typeCheckingMode": "basic",
-        "editor.formatOnSave": true
-      }
+        "ms-python.python",
+        "ms-python.isort"
+      ]
     }
   },
   "features": {

@@ -9,6 +9,7 @@ setuptools.setup(
     python_requires='==3.11.3',
     install_requires=[
         'absl-py==1.4.0',
+        'aioconsole==0.6.1',
         'asyncio-mqtt==0.16.1',
         'line_protocol_cache@git+https://github.com/XuZhen86/LineProtocolCache@8a9f994',
         'pytz==2023.3',
